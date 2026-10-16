@@ -41,6 +41,7 @@ models, converts it from one form to another, and decides what happens next.
 import ast
 import datetime
 import json
+import logging
 import os
 import re
 import warnings
@@ -233,7 +234,8 @@ class Agent:
                               if self.device == "cuda" else ""))
         self.guard = InputGuard(self.tracer, self.small_device) if self.config.use_guard else None
         self.router = IntentRouter(self.tracer, self.small_device) if self.config.use_router else None
-        self.llm = load_llm(self.tracer, self.config.llm, self.device)  # the planner: MODELS[config.llm]
+        # the planner: MODELS[config.llm], its weights in 16, 8 or 4 bits (config.llm_precision)
+        self.llm = load_llm(self.tracer, self.config.llm, self.device, self.config.llm_precision)
         self.perception = Perception(self.tracer, self.small_device)
         self.all_tools = all_tools()  # generator models load the first time each tool is called
         self.tools = {}
@@ -897,3 +899,4 @@ def _quiet_libraries(verbosity):
     transformers.logging.disable_progress_bar()
     diffusers.logging.set_verbosity_error()
     diffusers.logging.disable_progress_bar()
+    logging.getLogger("bitsandbytes").setLevel(logging.ERROR)  # int8: "inputs will be cast ..." at every step

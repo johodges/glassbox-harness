@@ -16,6 +16,8 @@ Excel calculates (see [More kinds of tool](#more-kinds-of-tool-a-calculator-a-da
 For code there is a fuller setup: pytest, a linter, a code search, whole-function edits and a review whose every
 file:line the harness checks, with an optional code-tuned planner (Qwen2.5-Coder 7B in 4 bits), measured against
 Llama on the same requests (see [Reviewing and developing code](#reviewing-and-developing-code)).
+And the planner itself can load in 16, 8 or 4 bits per weight, with what that changes measured: memory, speed, right
+answers and valid tool calls (see [Quantization](#quantization-fewer-bits-per-weight)).
 
 It is deliberately *not* a production agent like Claude Code or Codex. Instead, every hop the
 data takes is printed as it happens, colour-coded by **what kind of component** handled it:
@@ -206,7 +208,8 @@ Useful flags: `--verbose 2` (full prompt and token ids on every step), `--verbos
 `--no-router`, `--no-guard`, `--no-tool-guard` (don't check what tools read for injected instructions),
 `--yes` (don't ask before running a script), `--tools generate_image,generate_speech`, `--temperature 0.7`,
 `--seed 42`, `--open` (open the report in a browser), `--no-color`, `--llm code_llm` (plan with the code model,
-see [Reviewing and developing code](#reviewing-and-developing-code)), `--check-types` (check_code also runs mypy),
+see [Reviewing and developing code](#reviewing-and-developing-code)), `--precision int8` or `nf4` (the planner's
+weights in 8 or 4 bits, see [Quantization](#quantization-fewer-bits-per-weight)), `--check-types` (check_code also runs mypy),
 `--trellis remote` (3D on the Hugging Face Space instead of your own TRELLIS server, see below).
 
 ### From Spyder
@@ -270,6 +273,7 @@ Read in this order:
 | [compare_effort.py](compare_effort.py) | word problems and tool requests at four effort levels: what is right, and what it cost |
 | [harness/tools/coding.py](harness/tools/coding.py), [workspace/code_demo/](workspace/code_demo/) | code tools: pytest, ruff, a code search, whole-function edits, a review checked line by line; a small project with seeded bugs |
 | [compare_code.py](compare_code.py) | the same code requests with Llama 3.2 3B and Qwen2.5-Coder 7B (4-bit): tests afterwards, hidden checks, findings, cost |
+| [compare_quantization.py](compare_quantization.py) | the planner's weights in 16, 8 and 4 bits: memory, load time, speed, word problems, the eval suite, valid tool-call JSON |
 
 ## Experiments for a class
 
@@ -1335,8 +1339,9 @@ that also holds the router, the guards and the embedder, and whose Windows deskt
 it is **5.4 GB**, less than Llama 3.2 3B in bf16 (6.4 GB). `FOUR_BIT` in [config.py](harness/config.py) names the
 planners to quantize; [llm.py](harness/llm.py) passes a `BitsAndBytesConfig` (NF4, double quantization, bf16
 compute) to `from_pretrained`, and bitsandbytes stores each block of 64 weights as 4-bit numbers plus a scale and
-turns them back into bf16 for each matrix multiply. 4-bit weights can't be moved to CPU RAM and back, so the GPU
-MEMORY stage leaves this planner where it is (`LocalLLM.can_park`). bitsandbytes is a pip package (0.50.2 has CUDA
+turns them back into bf16 for each matrix multiply. The GPU MEMORY stage leaves a quantized planner where it is
+(`LocalLLM.can_park`): bitsandbytes 0.50 can move NF4 weights to CPU RAM and back, but int8 weights leave 2.8 of their
+3.6 GB on the GPU (see [Quantization](#quantization-fewer-bits-per-weight)). bitsandbytes is a pip package (0.50.2 has CUDA
 13 builds for Windows), in `requirements.txt` with pytest, ruff and mypy.
 
 Why this model (checked in October 2026): it is still the code-tuned model most guides recommend in the 7B class
@@ -1454,6 +1459,80 @@ around them, and for measuring what a small model does with them.
 Not done here: a switch to plan with a frontier model through the Anthropic API, for the same comparison (it would
 send the code and prompts off this machine, so it would be off by default). Adding one means a planner class with
 `generate()` that turns the API's tool-use blocks back into text for PARSE.
+
+## Quantization: fewer bits per weight
+
+Every weight in a model is one number, and Llama 3.2 3B was trained with 16-bit ones (bf16): 3.2 billion of them,
+6.4 GB. Quantization stores the same weights in fewer bits. `HarnessConfig(llm_precision=...)` or
+`run_agent.py --precision bf16|int8|nf4` loads the planner that way, through bitsandbytes, which quantizes while the
+model loads (`QUANTIZE` in [llm.py](harness/llm.py)). bitsandbytes needs an NVIDIA GPU (it is not installed on macOS);
+on a CPU the planner loads in 32 bits whatever the setting says.
+
+| precision | how each weight is stored |
+|-----------|---------------------------|
+| `bf16` (default) | a 16-bit float, as trained: 2 bytes |
+| `int8` | LLM.int8(): an 8-bit integer and a scale per row; the few input features with large values (outliers) are multiplied in 16 bits instead |
+| `nf4` | 4-bit NormalFloat: one of 16 levels spaced for bell-shaped weights, times a scale shared by a block of 64 weights (the scales themselves stored in 8 bits) |
+
+Both are *weight-only*: each layer's weights are turned back into bf16 for its multiply, so memory shrinks but the
+arithmetic stays 16-bit. Only the big weight matrices are quantized; the embedding table, which Llama 3.2 shares with
+its output layer (0.8 GB), stays bf16. LOAD LLM says which precision loaded and how much GPU memory the weights took
+(`torch.cuda.memory_allocated` before and after): 6.43 GB in bf16, 3.61 GB in int8, 2.24 GB in nf4.
+
+```powershell
+.\.venv\Scripts\python.exe run_agent.py --precision nf4 "Draw a cartoon robot and compose a short upbeat tune for it"
+.\.venv\Scripts\python.exe compare_quantization.py              # bf16, int8 and nf4: memory, speed, word problems, evaluate.py (~1.5 h)
+.\.venv\Scripts\python.exe compare_quantization.py questions    # without evaluate.py (~20 min)
+```
+
+`compare_quantization.py` loads the planner at each precision and runs the nine word problems from
+`compare_effort.py` (effort medium) and the whole `evaluate.py` suite (AGENTS.md and skills off, the date pinned). It
+also sorts every tool call the LLM wrote in the suite by its JSON: valid as written, readable only after the parser's
+repairs, or broken. The saved run is `outputs/example_quantization` (on the presenter's machine; its `comparison.md`
+has every word problem, every test and notes from the traces). It took 1 h 34 min, while another program kept the
+laptop's CPU 92-94% busy:
+
+| | bf16 | int8 | nf4 |
+|---|---|---|---|
+| GPU memory for the weights | 6.43 GB | 3.61 GB | **2.24 GB** |
+| load time (bitsandbytes quantizes while loading) | 11.1 s | 22.1 s | 14.6 s |
+| tokens per second, word problems (CPU busy: a quiet machine gives ~30 in bf16) | 9.9 | 3.2 | 10.1 |
+| word problems right (of 9, effort medium) | 5 | 5 | 6 |
+| `evaluate.py` passed (of 29) | **29** | 28 | 25 |
+| suite time | 18.5 min | 46.6 min | 15.3 min |
+| tool calls in the suite: valid JSON as written | 59 of 65 | 55 of 65 | 49 of 58 |
+| ... broken JSON (the call could not run) | 0 | 0 | 3 |
+
+What fewer bits did to a 3B planner:
+
+- **Memory: as promised, nearly.** int8 is 56% of bf16 and nf4 35%, not 50% and 25%: the embedding table stays in
+  bf16, and the scales take room too.
+- **Speed depends on the kernels.** bitsandbytes' int8 was three times slower than bf16 at batch size 1: LLM.int8()
+  splits every multiply into an 8-bit part and a 16-bit part for the outliers. The suite took 47 minutes instead of 19.
+  nf4 kept pace with bf16 here, with the CPU this busy; quantization buys speed only where a runtime has fast kernels
+  for the format (llama.cpp for GGUF, vLLM for AWQ, FP8 on data-centre GPUs). Quantizing while loading also costs time
+  (int8 took twice as long to load); pre-quantized files skip that.
+- **The arithmetic held; the tool calls did not.** 5, 5 and 6 of 9 word problems: one problem in nine is noise, not
+  a gain (every precision takes its own greedy path, and the wrong answers all changed: 11, 274 and 551 detectors).
+  The suite fell from 29 to 28 to 25, and every failure was a tool call carrying text or an exact value:
+  - **LaTeX (int8 and nf4):** instead of the reference results, Llama wrote "The final answer is
+    `$\boxed{...}$`", a math-answer habit from training, with one backslash. `\b` is a valid JSON escape (a
+    backspace), so the call parsed and the tool wrote a U+0008 into `report.tex`; only pdflatex refused it. bf16
+    wrote 109 words from the references, and they compiled.
+  - **Word (nf4):** a stray double quote in the paragraphs broke the JSON three times in a row (the 3 broken calls in
+    the table), and then the answer said "I have edited the Results section". The CHANGE CHECK caught it. int8 passed
+    this test, but wrote 73 words where bf16 wrote 244: a pass is not the same quality.
+  - **The script fix (nf4):** it said it had changed `totl` to `total` without calling `edit_code`.
+  - **Digitize, then calculate (nf4):** `"slide": "None"` as a string (validate() rejected it), then a made-up CSV path.
+- **Valid JSON is not a right call.** The `\b` call passed every JSON check. The harness's checks on the result (the
+  compile, CHANGE CHECK, validate()) caught all four kinds of failure; none of them guards against everything.
+
+For this planner on this GPU, 6.4 GB was never the bottleneck, so the harness stays in bf16. Quantization is for
+fitting a model that would not fit otherwise: Qwen2.5-Coder 7B in 4 bits (5.4 GB) did better than Llama 3.2 3B in
+bf16 (6.4 GB) on the fix and the new-function requests in `compare_code.py` (see
+[Measured: compare_code.py](#measured-compare_codepy)). That is the rule of thumb, "a larger model at 4 bits often
+beats a smaller one at 16 bits", though not a clean test of it: the 7B is also code-tuned. Larger models are reported to
+lose less than a 3B at the same number of bits; here only the 3B could be measured at all three precisions.
 
 ## Measuring instead of guessing: `evaluate.py`
 

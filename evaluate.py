@@ -122,7 +122,9 @@ def tool_calls(result):
     return attempted, executed
 
 
-def evaluate(agent, tests=TESTS):
+def evaluate(agent, tests=TESTS, keep=None):
+    """keep: a list to append (prompt, passed, RunResult) to for every test, for scripts that look at the runs
+    (compare_quantization.py)."""
     passed = 0
     agent.ask_user = lambda question: "n"
     for prompt, expected, *facts in tests:
@@ -134,6 +136,8 @@ def evaluate(agent, tests=TESTS):
                  if not any(text in str(reply.get(key, "")) for reply in replies)]
         ok = executed == expected and not wrong and not result.answer.lstrip().startswith("{")
         passed += ok
+        if keep is not None:
+            keep.append((prompt, ok, result))
         rejected = [name for name in attempted if name not in executed]
         extra = f"   (also asked for: {rejected})" if rejected else ""
         extra += f"   (wrong: {'; '.join(wrong)})" if wrong else ""

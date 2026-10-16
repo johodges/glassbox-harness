@@ -9,7 +9,7 @@
 transformers>=5.19          # LLM, classifiers, captioner, Whisper, MusicGen
 diffusers>=0.41             # SDXL-Turbo (image) and Wan 2.1 (video)
 accelerate                  # CPU<->GPU offloading for big pipelines
-bitsandbytes>=0.48; sys_platform != "darwin"  # 4-bit weights for the code model, MODELS["code_llm"] (0.50.2 tested; CUDA only)
+bitsandbytes>=0.48; sys_platform != "darwin"  # 8- and 4-bit weights: the code model, MODELS["code_llm"], and --precision int8/nf4 (0.50.2 tested; CUDA only)
 huggingface_hub             # downloads model weights
 safetensors
 sentencepiece               # tokenizers used by T5-style text encoders

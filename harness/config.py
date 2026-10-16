@@ -45,6 +45,14 @@ MODELS = {
     "embedder": "sentence-transformers/all-MiniLM-L6-v2",   # text -> 384 numbers (search_references)
 }
 
+# Precision: how many bits each of the planner's weights is stored in (HarnessConfig.llm_precision, --precision).
+# bitsandbytes quantizes while the model loads; compare_quantization.py measures what each one costs.
+PRECISIONS = {
+    "bf16": "16-bit floats, as trained",
+    "int8": "8-bit integers, LLM.int8()",
+    "nf4": "4-bit NormalFloat",
+}
+
 # Planners loaded in 4 bits (bitsandbytes NF4): each weight is stored in 4 bits instead of 16 and turned back into
 # bf16 on the fly, layer by layer. A quarter of the memory, a little slower, slightly less accurate.
 FOUR_BIT = {"code_llm"}
@@ -73,6 +81,7 @@ class HarnessConfig:
     # (full raw prompts, token ids, ...).
     verbosity: int = 1
     llm: str = "llm"              # which MODELS entry plans: "llm" (Llama 3.2 3B) or "code_llm" (Qwen2.5-Coder 7B)
+    llm_precision: str = "bf16"   # the planner's weights: "bf16", "int8" or "nf4" (PRECISIONS); FOUR_BIT models: nf4
     use_guard: bool = True        # run the prompt-injection classifier on the user's prompt
     guard_tool_outputs: bool = True  # ... and on the text tools bring back (search passages, files read)
     ask_before_acting: bool = True   # a person answers y/n before run_script runs code (False = yes to everything)

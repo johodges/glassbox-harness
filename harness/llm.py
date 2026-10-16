@@ -27,38 +27,63 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
 
-from .config import FOUR_BIT, MODELS
+from .config import FOUR_BIT, MODELS, PRECISIONS
+
+# How bitsandbytes stores the weights at each precision below 16 bits (PRECISIONS in config.py). Only the big weight
+# matrices (nn.Linear) are quantized; the embedding table, which Llama 3.2 shares with its output layer, stays bf16.
+QUANTIZE = {
+    # LLM.int8(): 8-bit integers with a scale per row; the few input features with large values ("outliers") are
+    # multiplied in 16 bits instead
+    "int8": dict(load_in_8bit=True),
+    # NF4: 4-bit numbers, 16 levels spaced for bell-shaped weights, and one scale per block of 64 weights (the scales
+    # themselves stored in 8 bits: "double quant")
+    "nf4": dict(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.bfloat16),
+}
 
 
-def load_llm(tracer, key="llm", device="cuda"):
-    """HarnessConfig.llm -> the planner: MODELS[key], in 4 bits if key is in FOUR_BIT (and on a GPU)."""
-    return LocalLLM(tracer, MODELS[key], device, four_bit=key in FOUR_BIT and device == "cuda")
+def load_llm(tracer, key="llm", device="cuda", precision="bf16"):
+    """HarnessConfig.llm and .llm_precision -> the planner: MODELS[key] at that precision. A model in FOUR_BIT is too
+    big for 16 bits beside the other models, so it loads in 4 bits unless int8 is asked for."""
+    if key in FOUR_BIT and precision == "bf16":
+        precision = "nf4"
+    return LocalLLM(tracer, MODELS[key], device, precision=precision)
 
 
 class LocalLLM:
-    def __init__(self, tracer, model_id=None, device="cuda", four_bit=False):
+    def __init__(self, tracer, model_id=None, device="cuda", precision="bf16", four_bit=False):
         self.tracer, self.device = tracer, device
         self.model_id = model_id or MODELS["llm"]
-        how = "4-bit NF4 (bitsandbytes)" if four_bit else "bf16" if device == "cuda" else "float32"
-        with tracer.stage("LOAD LLM", "python", self.model_id, "weights on disk", f"model on {device}, {how}") as ev:
+        # bitsandbytes needs an NVIDIA GPU; on the CPU the model loads in 32 bits
+        self.precision = ("nf4" if four_bit else precision) if device == "cuda" else "float32"
+        how = PRECISIONS.get(self.precision, "32 bits")
+        with tracer.stage("LOAD LLM", "python", self.model_id, "weights on disk",
+                          f"model on {device}, {self.precision}") as ev:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            if four_bit:
-                # Quantization: every big weight matrix is stored as 4-bit numbers plus one scale per block of 64.
-                # bitsandbytes does it while loading, and turns each block back into bf16 for the matrix multiply.
+            before = torch.cuda.memory_allocated() if device == "cuda" else 0
+            if self.precision in QUANTIZE:
+                # Quantization: every big weight matrix is stored in 8 or 4 bits plus a scale per row or block.
+                # bitsandbytes does it while loading, and turns the weights back into bf16 for each matrix multiply.
                 from transformers import BitsAndBytesConfig
-                quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
-                                           bnb_4bit_compute_dtype=torch.bfloat16)
+                quant = BitsAndBytesConfig(**QUANTIZE[self.precision])
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_id, quantization_config=quant,
-                                                                  device_map={"": 0}).eval()
+                                                                  dtype=torch.bfloat16, device_map={"": 0}).eval()
             else:
                 dtype = torch.bfloat16 if device == "cuda" else torch.float32
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_id, dtype=dtype).to(device).eval()
             params = self.model.num_parameters()
-            ev.summary = (f"{params / 1e9:.1f} billion parameters, vocabulary of {len(self.tokenizer):,} tokens, "
-                          f"{self.model.get_memory_footprint() / 1e9:.1f} GB of weights ({how}"
-                          + (f"; {params * 2 / 1e9:.1f} GB in bf16)" if four_bit else ")"))
+            # the GPU memory the weights took: what torch has allocated now, minus what the models before it took
+            self.weights_gb = ((torch.cuda.memory_allocated() - before) if device == "cuda"
+                               else self.model.get_memory_footprint()) / 1e9
+            ev.summary = (f"{params / 1e9:.1f} billion parameters at {self.precision} ({how}), vocabulary of "
+                          f"{len(self.tokenizer):,} tokens, {self.weights_gb:.2f} GB of weights"
+                          + (f" (in bf16: {params * 2 / 1e9:.1f} GB)" if self.precision in QUANTIZE else ""))
+            ev.details = {"precision": self.precision, "weights_gb": round(self.weights_gb, 3), "parameters": params}
+        self.load_seconds = ev.seconds
         self.on_gpu = device == "cuda"
-        self.can_park = not four_bit  # 4-bit weights can't be moved to CPU RAM and back (see agent._make_room_on_gpu)
+        # Quantized weights stay on the GPU (agent._make_room_on_gpu). nf4 could move to CPU RAM and back (tested with
+        # bitsandbytes 0.50), but int8 can't: 2.8 of its 3.6 GB stayed on the GPU after .to("cpu").
+        self.can_park = self.precision not in QUANTIZE
         self._previous_prompt = ""
         self.hit_limit = False  # did the last reply stop at max_new_tokens?
         self.date = None  # the date Llama 3's template writes into every prompt; None = today (HarnessConfig.prompt_date)
