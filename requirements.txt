@@ -1,7 +1,9 @@
 # Install PyTorch FIRST, with CUDA, from the PyTorch index (see README / setup.ps1):
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 # Then:  pip install -r requirements.txt
-# Tested with torch 2.14.1+cu130, transformers 5.19, diffusers 0.41, kokoro 0.9.4, gradio_client 2.7.
+#   (on Python 3.13 or 3.14 add --ignore-requires-python, for kokoro below; setup.ps1 and setup.sh do)
+# Tested with Python 3.12, torch 2.14.1+cu130, transformers 5.19, diffusers 0.41, kokoro 0.9.4, gradio_client 2.7;
+# installs and runs on Python 3.14 too.
 
 # --- The model libraries -------------------------------------------------------
 transformers>=5.19          # LLM, classifiers, captioner, Whisper, MusicGen
@@ -13,8 +15,9 @@ safetensors
 sentencepiece               # tokenizers used by T5-style text encoders
 protobuf
 ftfy                        # prompt cleaning used by the Wan video pipeline
-kokoro>=0.9.4               # Kokoro-82M text-to-speech
-en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+kokoro>=0.9.4               # Kokoro-82M text-to-speech (it and misaki declare Python < 3.13, but work on 3.13-3.14)
+spacy-curated-transformers<0.4  # pulled in by kokoro; newer ones need thinc 9, which has no wheels past Python 3.12
+en_core_web_sm @https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 # --- Remote tool (TRELLIS 3D runs on a Hugging Face Space) ----------------------
 gradio_client>=2.7

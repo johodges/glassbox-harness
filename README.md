@@ -97,7 +97,12 @@ The key ideas the trace makes visible:
 
 Plain Python and a virtual environment (`venv`), no Anaconda. You need:
 
-- **Python 3.12** (the version tested) from [python.org](https://www.python.org/downloads/) or your package manager.
+- **Python 3.12, 3.13 or 3.14** from [python.org](https://www.python.org/downloads/) or your package manager. 3.12
+  is the version tested throughout; 3.14 installs and runs too. The setup scripts take the first of 3.12, 3.13
+  and 3.14 they find (or the one in the `PYTHON` environment variable). The speech library, kokoro, declares that
+  it needs Python below 3.13, so on 3.13 and 3.14 the scripts tell pip to install it anyway
+  (`--ignore-requires-python`): installing by hand without that flag stops with
+  "No matching distribution found for kokoro".
 - **An NVIDIA GPU with 16 GB of memory** for everything to run at a teaching pace (tested on an RTX 4090 Laptop
   GPU). With less memory the harness moves models between the GPU and RAM and still works, but slower, and the
   video tool may not fit. Without a GPU (and on a Mac) everything runs on the CPU: text, documents, speech and
@@ -120,6 +125,10 @@ powershell -ExecutionPolicy Bypass -File setup.ps1        # makes .venv, install
 .\.venv\Scripts\python.exe download_models.py              # ~65 GB, once
 .\.venv\Scripts\python.exe run_agent.py "Paint a watercolor fox in a snowy forest and narrate a one-sentence story about it"
 ```
+
+Clone into a short folder path (under 95 characters, e.g. `C:\glassbox-harness`): Windows limits paths to 260
+characters unless long paths are enabled, and PyTorch installs files 155 characters below `.venv\`. `setup.ps1`
+checks this before downloading anything.
 
 Optional: `powershell -ExecutionPolicy Bypass -File trellis_local\setup.ps1` installs a local 3D server in WSL
 (~23 GB, see [TRELLIS](#trellis-3d-remote-or-local)); without it, add `--trellis remote` to 3D requests.
