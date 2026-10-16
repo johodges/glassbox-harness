@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# One-time setup on Linux or macOS, using plain Python + venv (no Anaconda).
+#   bash setup.sh
+# Needs Python 3.12 (python3.12 on the PATH, or set PYTHON=/path/to/python3.12).
+# Linux: an NVIDIA GPU with a recent driver; PyTorch comes from PyTorch's CUDA index (override with TORCH_INDEX).
+# macOS: no CUDA; the harness runs on the CPU (see the README's Quick start for which models to download).
+set -euo pipefail
+cd "$(dirname "$0")"
+
+PYTHON="${PYTHON:-python3.12}"
+if [ ! -d .venv ]; then
+    "$PYTHON" -m venv .venv
+fi
+PY=.venv/bin/python
+"$PY" -m pip install --upgrade pip
+
+# PyTorch first: the CUDA build comes from PyTorch's own package index, not PyPI.
+if [ "$(uname)" = "Darwin" ]; then
+    "$PY" -m pip install torch torchvision
+else
+    "$PY" -m pip install torch torchvision --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}"
+fi
+
+# Everything else. The constraint file stops pip from swapping in a different torch build.
+"$PY" -m pip freeze | grep -i '^torch' > torch-constraint.txt
+"$PY" -m pip install -r requirements.txt -c torch-constraint.txt
+rm torch-constraint.txt
+
+"$PY" -c "import torch; print('CUDA available:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '(the harness will run on the CPU)')"
+
+echo
+echo "Next: download the models (~65 GB, once):   .venv/bin/python download_models.py"
+echo "Then try:   .venv/bin/python run_agent.py \"Paint a watercolor fox and narrate a one-line story about it\""

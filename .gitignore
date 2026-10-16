@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Every run writes its files, trace and report here: make your own with run_agent.py
+outputs/
+
+# Only the generic workshop template is shared; put your own templates next to it (they stay private)
+workspace/templates/*
+!workspace/templates/workshop_template.pptx
+
+# Local TRELLIS server log
+trellis_local/server.log
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

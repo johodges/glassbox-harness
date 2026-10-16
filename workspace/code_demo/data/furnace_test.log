@@ -1,0 +1,8 @@
+# time (s), temperature (C): a thermocouple in a small furnace test
+0, 20.0
+30, 145.5
+60, 298.0
+90, 402.5
+120, 471.0
+150, 505.5
+180, 512.0

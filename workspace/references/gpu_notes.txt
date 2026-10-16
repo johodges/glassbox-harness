@@ -1,0 +1,7 @@
+Notes: sharing one GPU
+
+All models share one 16 GB laptop GPU. Before a tool runs, the harness compares the memory it needs with the memory that is free, and moves other models (the LLM, the classifiers, the perception models) into ordinary RAM if necessary. Each model moves itself back when it is next needed; each move takes one to two seconds.
+
+The video model's text encoder alone needs about 11 GB. Automatic offloading assumes the order text encoder, transformer, VAE, but the VACE video model also runs the VAE first, so the text encoder was still on the GPU and memory spilled into system RAM: a 2-second segment took 7 minutes. The tool now moves the text encoder in once, encodes all storyboard prompts, and moves it out before the video model starts.
+
+Windows' desktop compositor holds about 3 GB of the GPU, so the real budget is about 13 GB. Decoding the video in tiles reduced the peak from about 17 GB to 6.7 GB.

@@ -1,0 +1,4 @@
+# Text files are stored with LF line endings and checked out in the platform's style.
+* text=auto
+# Shell scripts run on Linux, macOS and inside WSL: keep them LF even on Windows checkouts.
+*.sh text eol=lf

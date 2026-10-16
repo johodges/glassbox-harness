@@ -1,0 +1,42 @@
+# Install PyTorch FIRST, with CUDA, from the PyTorch index (see README / setup.ps1):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+# Then:  pip install -r requirements.txt
+# Tested with torch 2.14.1+cu130, transformers 5.19, diffusers 0.41, kokoro 0.9.4, gradio_client 2.7.
+
+# --- The model libraries -------------------------------------------------------
+transformers>=5.19          # LLM, classifiers, captioner, Whisper, MusicGen
+diffusers>=0.41             # SDXL-Turbo (image) and Wan 2.1 (video)
+accelerate                  # CPU<->GPU offloading for big pipelines
+bitsandbytes>=0.48; sys_platform != "darwin"  # 4-bit weights for the code model, MODELS["code_llm"] (0.50.2 tested; CUDA only)
+huggingface_hub             # downloads model weights
+safetensors
+sentencepiece               # tokenizers used by T5-style text encoders
+protobuf
+ftfy                        # prompt cleaning used by the Wan video pipeline
+kokoro>=0.9.4               # Kokoro-82M text-to-speech
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+# --- Remote tool (TRELLIS 3D runs on a Hugging Face Space) ----------------------
+gradio_client>=2.7
+
+# --- Files in / files out ------------------------------------------------------
+soundfile                   # read/write WAV
+imageio[ffmpeg]             # write MP4
+trimesh                     # inspect 3D meshes (GLB)
+python-pptx                 # read and edit PowerPoint files (document tools)
+python-docx                 # read and edit Word files
+pypdf                       # read the text of PDFs (reference documents)
+openpyxl                    # read and write Excel workbooks (update_excel, read_file); Excel itself calculates them
+pywin32; sys_platform == "win32"  # drives PowerPoint and Excel through COM: slide PNGs, measured text, PDF, recalc
+scipy                       # digitize_plot: connected blobs of pixels (scipy.ndimage), no ML
+matplotlib                  # workspace/make_examples.py draws the test plot with known numbers (hrr_curves.png)
+
+# --- Code tools (harness/tools/coding.py): they run on workspace/code_demo ---------------------------------------
+pytest                      # run_tests (9.1.1 tested)
+ruff                        # check_code: the linter (0.17.1 tested)
+mypy                        # check_code with HarnessConfig.check_types (2.4.0 tested)
+# The LaTeX tool also needs pdflatex on the PATH (e.g. TeX Live or MiKTeX); without it, it reports an error.
+# export_pdf needs PowerPoint (Windows) or LibreOffice (soffice); convert_presentation works without either.
+
+# --- Optional: lets Spyder use this venv as its Python interpreter ---------------
+spyder-kernels>=3.1,<3.2
