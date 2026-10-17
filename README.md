@@ -1575,7 +1575,7 @@ lose less than a 3B at the same number of bits; here only the 3B could be measur
 
 `python evaluate.py` runs thirty fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, five for the code tools, one of them a fix that the PLANNER hands to the code model; on 2026-10-16 it scored 30/30 in 17 minutes, with the date pinned) and checks which tools actually ran (a pass means exactly
 the expected tools ran, the results name the right files where a test says which, and the final
-answer is text). `python evaluate.py --real` adds slow tests on real files outside the project. Because decoding is greedy, the same harness
+answer is text). `python evaluate.py --real` adds slow tests on real files outside the project. `python evaluate.py --only database` runs only the tests whose request contains those words (here the two database tests, in about a minute). Because decoding is greedy, the same harness
 gives the same result every time, so any change in score comes from your change, with one catch found on 2026-10-16:
 Llama 3's chat template writes "Today Date: 16 Oct 2026" into every prompt. With the new date, the refused DELETE
 took another path (Llama ran a SELECT of the same trees instead of stopping) and the suite scored 27/29; with the date

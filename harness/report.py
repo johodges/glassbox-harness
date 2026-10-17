@@ -230,7 +230,7 @@ def write_report(result, path):
         out.append("<h2>Files the tools made</h2>")
         out += [_media(f, run_dir) for f in result.files]
 
-    out.append("<h2>The run, as the console showed it</h2><div class='legend'>")
+    out.append("<h2 id='console'>The run, as the console showed it</h2><div class='legend'>")
     out += [f"<span><i style='background:{COLORS[k]}'></i>{html.escape(v[0])}</span>" for k, v in KINDS.items()]
     out.append("</div><div class='toolbar'>"
                "<button onclick=\"setAll('details.step, details.stage', true)\">Expand all</button>"

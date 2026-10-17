@@ -8,6 +8,7 @@ MODELS["llm"], ...) and run this again to see whether the harness got better or 
 
     python evaluate.py
     python evaluate.py --real   # also the slow tests on real files outside the project (REAL_TESTS)
+    python evaluate.py --only database   # only the tests whose request contains these words (a quick check)
 
 Takes a few minutes: every test really generates its images and sounds.
 """
@@ -160,6 +161,10 @@ if __name__ == "__main__":
     # The date is pinned too: Llama 3's chat template writes "Today Date: ..." into every prompt, and on 16 October
     # the refused DELETE took another path than on the 15th (it ran a SELECT instead). A score should change because
     # the harness changed, not the calendar.
+    tests = TESTS + (REAL_TESTS if "--real" in sys.argv else [])
+    if "--only" in sys.argv:  # e.g. --only database: the tests whose request contains every one of these words
+        words = [w.lower() for w in sys.argv[sys.argv.index("--only") + 1:] if not w.startswith("--")]
+        tests = [t for t in tests if all(w in t[0].lower() for w in words)]
+        print(f"{len(tests)} test(s) match {' '.join(words)!r}", end="\n\n")
     evaluate(Agent(HarnessConfig(verbosity=0, color=False, ask_before_acting=False, use_agents_md=False,
-                                 use_skills=False, prompt_date="15 Oct 2026")),
-             TESTS + (REAL_TESTS if "--real" in sys.argv else []))
+                                 use_skills=False, prompt_date="15 Oct 2026")), tests)
