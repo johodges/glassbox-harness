@@ -222,6 +222,7 @@ class RunResult:
     events: list = field(default_factory=list)     # every traced stage
     run_dir: Path = None
     report: Path = None
+    log: list = field(default_factory=list)        # everything the console showed, in order (Tracer.log)
 
 
 class Agent:
@@ -818,7 +819,7 @@ class Agent:
             for f in files:
                 t.emit(f"  {_relative(Path(f))}")
         t.print_summary()
-        result = RunResult(prompt, answer, files, messages, list(t.events), run_dir)
+        result = RunResult(prompt, answer, files, messages, list(t.events), run_dir, log=list(t.log))
         t.save_json(run_dir / "trace.json")
         result.report = write_report(result, run_dir / "report.html")
         t.emit(f"\nReport: {result.report}")

@@ -33,8 +33,11 @@ data takes is printed as it happens, colour-coded by **what kind of component** 
 | red     | remote API, another computer| TRELLIS 3D on a Hugging Face Space (`--trellis remote`)    |
 | blue    | local server, other process | TRELLIS 3D in WSL on this PC (the default, see [TRELLIS](#trellis-3d-remote-or-local)); Excel, which recalculates a workbook |
 
-Each run also writes `outputs/run_<time>/report.html`, a clickable timeline of the same stages
-with the generated files embedded (including an interactive 3D viewer), and `trace.json`.
+Each run also writes `outputs/run_<time>/report.html`: the console, replayed in the same colours, with every STEP
+and every stage folding open and shut (a folded stage still shows its `=>` result), the generated files embedded where
+they were made (including an interactive 3D viewer), the `--verbose 2` lines behind a switch, and the data-flow
+summary. The tracer records everything it prints (`Tracer.log`) at any verbosity, so even an `evaluate.py` run, which
+prints nothing, gets the full report. It also writes `trace.json`.
 The sections below often cite saved runs (`outputs/example_*`) from the webinar this harness was
 built for. They are not in the repository (videos, decks and traces are too big): run the same
 request and open your own `report.html`.

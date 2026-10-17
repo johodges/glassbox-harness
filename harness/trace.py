@@ -10,7 +10,8 @@ data moves from one component to another, the code wraps that step in
         ev.summary = "offered 2 tools"
 
 and the tracer prints a coloured header, times the step, and keeps a record of it for the
-end-of-run summary, trace.json and the HTML report.
+end-of-run summary, trace.json and the HTML report. It also keeps everything it prints, in order
+(Tracer.log), so report.html can replay the console with the same colours.
 """
 
 import json
@@ -57,11 +58,15 @@ class Tracer:
         self.verbosity = verbosity
         self.color = color and os.environ.get("NO_COLOR") is None
         self.events = []
+        # Everything the console shows, in order, at any verbosity: banners, stage starts and ends, the lines said
+        # inside them and the LLM's streamed tokens. report.html replays it, with the console's colours.
+        self.log = []
         self.labels = []         # the sub-agents we are inside, e.g. ["SUBAGENT 1/3"] (see nested())
         self._line_start = True
 
     def reset(self):
         self.events = []
+        self.log = []
 
     @contextmanager
     def nested(self, label):
@@ -89,7 +94,9 @@ class Tracer:
         return f"{code}{text}{RESET}" if self.color else text
 
     def say(self, text, level=1, kind=None, indent=5):
-        """Print an indented line (only if verbosity >= level)."""
+        """Print an indented line (only if verbosity >= level). The report keeps it either way."""
+        self.log.append({"type": "line", "text": str(text), "kind": kind, "level": level, "indent": indent,
+                         "depth": len(self.labels)})
         if self.verbosity < level:
             return
         pad = " " * indent
@@ -98,10 +105,16 @@ class Tracer:
 
     def write(self, text, kind=None):
         """Print without a newline (used to stream LLM tokens)."""
+        last = self.log[-1] if self.log else {}
+        if last.get("type") == "stream" and last["kind"] == kind:  # one record per stretch of tokens
+            last["text"] += text
+        else:
+            self.log.append({"type": "stream", "text": text, "kind": kind, "depth": len(self.labels)})
         if self.verbosity >= 1:
             self.emit(self._c(KINDS[kind][1], text) if kind else text, end="")
 
     def banner(self, text):
+        self.log.append({"type": "banner", "text": text})
         if self.verbosity >= 1:
             self.emit("\n" + self._c(BOLD, "=" * 100) + "\n" + self._c(BOLD, text) + "\n"
                       + self._c(BOLD, "=" * 100))
@@ -112,6 +125,7 @@ class Tracer:
         stage = " > ".join(self.labels + [stage])  # e.g. "SUBAGENT 1/3 > PROMPT ASSEMBLY"
         ev = Event(len(self.events) + 1, stage, kind, component, data_in, data_out)
         self.events.append(ev)
+        self.log.append({"type": "start", "event": ev.index})
         if self.verbosity >= 1:
             label, code = KINDS[kind]
             head = f"[{ev.index}] {stage}"
@@ -126,6 +140,7 @@ class Tracer:
             raise
         finally:
             ev.seconds = time.perf_counter() - start
+            self.log.append({"type": "end", "event": ev.index})
             if self.verbosity >= 1:
                 self.emit(self._c(KINDS[kind][1], f"     => {ev.summary}") + self._c(DIM, f"   ({ev.seconds:.2f}s)"))
                 for path in ev.artifacts:
