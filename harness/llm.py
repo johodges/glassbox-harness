@@ -47,7 +47,16 @@ def load_llm(tracer, key="llm", device="cuda", precision="bf16"):
     big for 16 bits beside the other models, so it loads in 4 bits unless int8 is asked for."""
     if key in FOUR_BIT and precision == "bf16":
         precision = "nf4"
-    return LocalLLM(tracer, MODELS[key], device, precision=precision)
+    llm = LocalLLM(tracer, MODELS[key], device, precision=precision)
+    llm.key = key  # which MODELS entry this is (the PLANNER stage in agent.py compares it with the one it wants)
+    return llm
+
+
+def downloaded(model_id):
+    """Is the model in the Hugging Face cache, where download_models.py puts it? Loading one that isn't would start a
+    download in the middle of a request (15 GB for the code model)."""
+    from huggingface_hub import try_to_load_from_cache
+    return isinstance(try_to_load_from_cache(model_id, "config.json"), str)
 
 
 class LocalLLM:

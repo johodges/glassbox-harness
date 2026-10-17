@@ -57,6 +57,15 @@ PRECISIONS = {
 # bf16 on the fly, layer by layer. A quarter of the memory, a little slower, slightly less accurate.
 FOUR_BIT = {"code_llm"}
 
+# PLANNER (agent.py): when the ROUTER offers one of these tools (the code project's tools, tools/coding.py) AND the
+# request asks for code to be changed (CODE_CHANGE), MODELS["code_llm"] plans it instead of MODELS[HarnessConfig.llm].
+# The router picks the model as well as the tools, as products that route between a small and a large model do.
+# Only changes: on "run the tests and tell me which fails" or "lint this file" the 7B coder edited files nobody asked
+# it to touch, while Llama 3B answered right in a seventh of the time. HarnessConfig.route_planner turns it off.
+CODE_TOOLS = {"run_tests", "check_code", "search_code", "write_code", "create_file", "review_code"}
+CODE_CHANGE = (r"\b(?:fix(?:es|ing)?|repair|correct|write|add|implement|refactor|rewrite|change|rename|create|update)\b"
+               r"|\bmake\b[^.?!]{0,40}\bpass(?:es)?\b")
+
 
 # Effort: how much work the harness lets the LLM do on one request. More effort means more tokens and more
 # LLM calls: checks before finishing, several attempts at an answer, thinking before acting, a second look at
@@ -82,6 +91,9 @@ class HarnessConfig:
     verbosity: int = 1
     llm: str = "llm"              # which MODELS entry plans: "llm" (Llama 3.2 3B) or "code_llm" (Qwen2.5-Coder 7B)
     llm_precision: str = "bf16"   # the planner's weights: "bf16", "int8" or "nf4" (PRECISIONS); FOUR_BIT models: nf4
+    # PLANNER: code requests (the ROUTER offered a CODE_TOOLS tool) are planned by MODELS["code_llm"], in 4 bits,
+    # when there is an NVIDIA GPU and the model was downloaded; False = MODELS[llm] plans everything
+    route_planner: bool = True
     use_guard: bool = True        # run the prompt-injection classifier on the user's prompt
     guard_tool_outputs: bool = True  # ... and on the text tools bring back (search passages, files read)
     ask_before_acting: bool = True   # a person answers y/n before run_script runs code (False = yes to everything)

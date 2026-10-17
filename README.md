@@ -56,6 +56,7 @@ and reviewed by the author.
    |
    |-> [1] INPUT GUARD   classifier   DeBERTa prompt-injection detector     text -> SAFE / INJECTION
    |-> [2] ROUTER        classifier   DeBERTa zero-shot (NLI), per clause   text -> which tools to offer
+   |       PLANNER       python       code tools + a change (fix, write, add...) -> the code model plans
    |       AGENTS.md     python       workspace/AGENTS.md -> every system prompt
    |       SKILLS        embedder     MiniLM: request vs each SKILL.md description -> skills to paste in
    |       EFFORT        python       a budget and extra steps: checks, VOTE, THINK, REVIEW (config.EFFORT)
@@ -200,15 +201,15 @@ The commands in the rest of this README are written for Windows PowerShell. On L
 .\.venv\Scripts\python.exe run_agent.py                 # interactive: models stay loaded between prompts
 .\.venv\Scripts\python.exe run_agent.py "Run workspace/scripts/word_count.py, fix the error it reports, and run it again."
 .\.venv\Scripts\python.exe run_agent.py "Is there a clock on the tower in workspace/images/eiffel_tower.png?"
-.\.venv\Scripts\python.exe run_agent.py --llm code_llm "Run the tests in workspace/code_demo and fix the code so that the failing test passes."
-.\.venv\Scripts\python.exe evaluate.py                  # score the harness on 29 fixed requests (~10-17 min)
+.\.venv\Scripts\python.exe run_agent.py "Run the tests in workspace/code_demo and fix the code so that the failing test passes."  # the code model plans
+.\.venv\Scripts\python.exe evaluate.py                  # score the harness on 30 fixed requests (~20 min)
 ```
 
 Useful flags: `--verbose 2` (full prompt and token ids on every step), `--verbose 0` (answer only),
 `--no-router`, `--no-guard`, `--no-tool-guard` (don't check what tools read for injected instructions),
 `--yes` (don't ask before running a script), `--tools generate_image,generate_speech`, `--temperature 0.7`,
-`--seed 42`, `--open` (open the report in a browser), `--no-color`, `--llm code_llm` (plan with the code model,
-see [Reviewing and developing code](#reviewing-and-developing-code)), `--precision int8` or `nf4` (the planner's
+`--seed 42`, `--open` (open the report in a browser), `--no-color`, `--llm llm` or `--llm code_llm` (one planner for every
+request; without it the PLANNER stage hands code changes to the code model, see [Which planner](#which-planner-the-planner-stage)), `--precision int8` or `nf4` (the planner's
 weights in 8 or 4 bits, see [Quantization](#quantization-fewer-bits-per-weight)), `--check-types` (check_code also runs mypy),
 `--trellis remote` (3D on the Hugging Face Space instead of your own TRELLIS server, see below).
 
@@ -1102,7 +1103,7 @@ prompt. What differs is **when** each is read, and so what it costs:
 | file | read | holds | costs (measured) |
 |------|------|-------|------------------|
 | [workspace/AGENTS.md](workspace/AGENTS.md) | every request (the AGENTS.md stage) | the team's conventions: the voice, the picture style, the template, units | 123 tokens, in every request |
-| [workspace/skills/\<name\>/SKILL.md](workspace/skills/) | only when the request matches its `description` (the SKILLS stage) | one procedure: how the team does one kind of task, and any `tools` it needs | 110 to 138 tokens, only in the requests that load it; the 3 descriptions (56 tokens) are read by a matcher, outside the prompt |
+| [workspace/skills/\<name\>/SKILL.md](workspace/skills/) | only when the request matches its `description` (the SKILLS stage) | one procedure: how the team does one kind of task, and any `tools` it needs | 100 to 219 tokens, only in the requests that load it; the 4 names and descriptions (75 tokens) are read by a matcher, outside the prompt |
 | [workspace/agents/\<name\>.md](workspace/agents/) | when the LLM hands a job to a helper | a description, the helper's tools and its system prompt | a separate, fresh context |
 
 A skill is a folder with a SKILL.md. The frontmatter between the `---` lines is what the harness reads first:
@@ -1161,7 +1162,7 @@ took 0.4 to 21 s once the models were loaded:
 |---|---|---|---|---|
 | Read aloud: hello class | AGENTS.md | voice af_heart (the default) | voice bf_emma | 589 -> 712 |
 | Using the reference notes, update slide 2 ... how speech is fitted to a length. | skill: slide-bullets | wrote before searching; 3 bullets of 9-13 words, none with a number from the notes | searched first; 3 bullets of 10-11 words, 1 with a number from the notes | 1033 -> 1294 |
-| Convert workspace/old_format_deck.pptx to the ULRI template. | skill: deck-conversion (first written for that template) | section slide on Divider Dark Blue | section slide on Divider Light Blue | 905 -> 1138 |
+| Convert workspace/old_format_deck.pptx to the workshop template. | skill: deck-conversion | section slide on Section Header (dark) | section slide on Section Header Light | 903 -> 1125 |
 | Draw a red bicycle leaning on a brick wall. | AGENTS.md + skill: image-check | a photo; not checked | a flat illustration; look_at_image: "yes" | 436 -> 897 |
 | What is the capital of France? | nothing matches: AGENTS.md only | Paris | Paris | 59 -> 182 |
 
@@ -1261,11 +1262,12 @@ Coding agents are the agents most people use. Until this section the harness had
 `edit_code` (find and replace whole lines) and `run_script`, planned by a general chat model. It now has a
 configuration for a small Python project with tests: six code tools in
 [harness/tools/coding.py](harness/tools/coding.py), all plain Python; a code-tuned planner,
-`MODELS["code_llm"]`, loaded in 4 bits; a skill; a project with five seeded bugs; and a script that measures both
+`MODELS["code_llm"]`, loaded in 4 bits, which the router picks for requests that change code; a skill; a project with five seeded bugs; and a script that measures both
 planners on the same requests.
 
 ```powershell
-.\.venv\Scripts\python.exe run_agent.py --llm code_llm "Run the tests in workspace/code_demo and fix the code so that the failing test passes."
+.\.venv\Scripts\python.exe run_agent.py "Run the tests in workspace/code_demo and fix the code so that the failing test passes."
+.\.venv\Scripts\python.exe run_agent.py --llm llm "Run the tests in workspace/code_demo and fix the code so that the failing test passes."
 .\.venv\Scripts\python.exe run_agent.py "Review workspace/code_demo/readings.py and report each problem you find with its file and line number."
 .\.venv\Scripts\python.exe run_agent.py "Where is median used in workspace/code_demo?"
 .\.venv\Scripts\python.exe run_agent.py --check-types "Check workspace/code_demo with the linter."
@@ -1333,8 +1335,8 @@ function whole with write_code, report findings as path:line, and say what confi
 
 ### The code model: Qwen2.5-Coder 7B in 4 bits
 
-`MODELS["code_llm"] = "Qwen/Qwen2.5-Coder-7B-Instruct"` (Apache 2.0), chosen with `HarnessConfig(llm="code_llm")`
-or `run_agent.py --llm code_llm`. It has 7.6 billion parameters: 15.2 GB in bf16, too much for a 16 GB laptop GPU
+`MODELS["code_llm"] = "Qwen/Qwen2.5-Coder-7B-Instruct"` (Apache 2.0), picked for each request that changes
+code by the PLANNER stage ([below](#which-planner-the-planner-stage)), or for every request with `run_agent.py --llm code_llm`. It has 7.6 billion parameters: 15.2 GB in bf16, too much for a 16 GB laptop GPU
 that also holds the router, the guards and the embedder, and whose Windows desktop takes about 3 GB. Loaded in 4 bits
 it is **5.4 GB**, less than Llama 3.2 3B in bf16 (6.4 GB). `FOUR_BIT` in [config.py](harness/config.py) names the
 planners to quantize; [llm.py](harness/llm.py) passes a `BitsAndBytesConfig` (NF4, double quantization, bf16
@@ -1432,6 +1434,38 @@ What happened in each run (open the reports to follow along):
 So the code model is the better planner for this work: it fixed the bug and wrote the better function. But the larger
 difference is between what either model did and what the request asked for. The harness made sure that every gap
 was visible: each false claim of success got a note from a check built on a fact the harness had.
+
+### Which planner: the PLANNER stage
+
+Nobody should have to type `--llm code_llm`. The router already knows a request is about code: its rules offered the
+code tools. So a stage right after it, PLANNER (`Agent._pick_planner`, plain Python), picks the LLM too: if one of
+the code tools (`CODE_TOOLS` in [config.py](harness/config.py)) was offered **and** the request asks for a change
+(`CODE_CHANGE`: fix, write, add, implement, refactor, ...), the code model plans it. Everything else, questions about
+code included, stays with Llama. The router picks the model as well as the tools, the way commercial assistants send
+easy turns to a fast model and hard ones to a bigger one.
+
+Only changes, because that is where each model is better (measured on 2026-10-16, one run each, greedy):
+
+| request | Llama 3.2 3B | Qwen2.5-Coder 7B (4-bit) |
+|---|---|---|
+| Run the tests in workspace/code_demo and tell me which test fails and why. | right (`run_tests`), 12 s | ran the tests, then rewrote `stats.py` without being asked and said "all tests now pass", 91 s |
+| Check workspace/code_demo/readings.py with the linter. | right (`check_code`) | `check_code`, `run_tests`, three edits nobody asked for, then an apology, 150 s |
+| Run the tests in workspace/code_demo and fix the code so that the failing test passes. | two edits, the test still fails | `run_tests`, `write_code`, `run_tests`: all 9 pass, 81 s |
+
+The swap: one planner on the GPU at a time. Llama (16-bit) is parked in CPU RAM and comes back in a second or two at
+its next LLM stage; Qwen's 4-bit weights can't be parked (`LocalLLM.can_park`), so it is freed when a request doesn't
+need it and loaded again next time (about 15 s from the disk cache). The PLANNER stage says what it did:
+
+```
+--- [6] PLANNER ----------------------------------------------------  plain Python, no ML
+     => code tools offered (run_tests, write_code) and the request says 'fix' -> Qwen/Qwen2.5-Coder-7B-Instruct
+        plans this request; parked unsloth/Llama-3.2-3B-Instruct in CPU RAM, 14.8 GB free
+```
+
+Without an NVIDIA GPU (the 4-bit model needs bitsandbytes and CUDA), or if `download_models.py` skipped `code_llm`,
+the stage keeps Llama and says why. `--llm llm` or `--llm code_llm` (or `HarnessConfig(route_planner=False)`) pins one
+planner for every request; `compare_code.py` and `compare_quantization.py` do that, because they measure one planner
+at a time. `evaluate.py` runs with the stage on: its four code questions stay with Llama, and its one fix goes to Qwen.
 
 ### What a 3B or 7B planner can't do
 
@@ -1536,7 +1570,7 @@ lose less than a 3B at the same number of bits; here only the 3B could be measur
 
 ## Measuring instead of guessing: `evaluate.py`
 
-`python evaluate.py` runs twenty-nine fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, four for the code tools; on 2026-10-16 it scored 29/29 in 19 minutes, with the date pinned) and checks which tools actually ran (a pass means exactly
+`python evaluate.py` runs thirty fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, five for the code tools, one of them a fix that the PLANNER hands to the code model; on 2026-10-16 it scored 30/30 in 17 minutes, with the date pinned) and checks which tools actually ran (a pass means exactly
 the expected tools ran, the results name the right files where a test says which, and the final
 answer is text). `python evaluate.py --real` adds slow tests on real files outside the project. Because decoding is greedy, the same harness
 gives the same result every time, so any change in score comes from your change, with one catch found on 2026-10-16:

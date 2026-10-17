@@ -112,7 +112,8 @@ def measure(precision, which, folder):
     cpu = psutil.cpu_percent(interval=2)  # other programs keep the CPU busy too: batch-1 generation waits on the CPU
     # as evaluate.py: no AGENTS.md or skills, and the date in the prompt pinned, so only the precision changes
     agent = Agent(HarnessConfig(verbosity=0, color=False, ask_before_acting=False, use_agents_md=False,
-                                use_skills=False, prompt_date="15 Oct 2026", llm_precision=precision))
+                                use_skills=False, prompt_date="15 Oct 2026", llm_precision=precision,
+                                route_planner=False))  # Llama plans every test, code too
     row = {"precision": precision, "weights_gb": agent.llm.weights_gb, "load_seconds": agent.llm.load_seconds,
            "cpu_busy": cpu}
     print(f"\n{precision}: {row['weights_gb']:.2f} GB of weights, loaded in {row['load_seconds']:.1f}s "

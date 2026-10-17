@@ -82,6 +82,12 @@ TESTS = [
     ("Where is median used in workspace/code_demo?", ["search_code"], {"matches": "stats.py:30"}),
     ("Review workspace/code_demo/readings.py and report each problem you find with its file and line number.",
      ["read_file", "review_code"], {"summary": "finding"}),
+    # the four above only look, so Llama plans them; a change to code goes to the code model (the PLANNER stage):
+    # Qwen2.5-Coder 7B fixes median() and the tests pass, where Llama 3.2 3B left the test failing. Here (no skills,
+    # the date pinned) it edits the line with edit_code; with them it rewrites the function with write_code. Either is a
+    # fix: the fact that matters is the last test run, "all 9 tests passed"
+    ("Run the tests in workspace/code_demo and fix the code so that the failing test passes.",
+     ["run_tests", "edit_code", "run_tests"], {"summary": "tests passed"}),
 ]
 
 # APPROVAL (agent.py) asks a person before run_script runs code. Here nobody is asked, and every call is approved,

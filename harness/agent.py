@@ -6,7 +6,8 @@ THE AGENT LOOP: start reading here.
       |-> INPUT GUARD      classifier   is this a prompt-injection attempt?        text -> label
       |-> IMPORT FILES     python       copy files the user named into the run     paths -> copies
       |-> ROUTER           classifier   which tools are relevant to this request?  text -> tool names
-      |-> AGENTS.md        python       the team's instructions, pasted into every system prompt
+      |-> PLANNER          python       which LLM plans it? a change to code -> the code model
+      |-> AGENTS.md       python       the team's instructions, pasted into every system prompt
       |-> SKILLS           embedder     which SKILL.md files match the request?    text -> instructions
       |-> EFFORT           python       budget + extra LLM calls: THINK first, VOTE, REVIEW (config.EFFORT)
       |
@@ -40,6 +41,7 @@ models, converts it from one form to another, and decides what happens next.
 
 import ast
 import datetime
+import gc
 import json
 import logging
 import os
@@ -52,9 +54,9 @@ from pathlib import Path
 import torch
 
 from .classifiers import InputGuard, IntentRouter, calculates_from_a_file
-from .config import EFFORT, MODELS, PROJECT_DIR, HarnessConfig
+from .config import CODE_CHANGE, CODE_TOOLS, EFFORT, MODELS, PROJECT_DIR, HarnessConfig
 from .instructions import AGENTS_FILE, agents_text, find_skills, score_skills, skill_text
-from .llm import gpu_free_gb, load_llm
+from .llm import downloaded, gpu_free_gb, load_llm
 from .perception import Perception
 from .report import write_report
 from .tools import all_tools
@@ -234,8 +236,10 @@ class Agent:
                               if self.device == "cuda" else ""))
         self.guard = InputGuard(self.tracer, self.small_device) if self.config.use_guard else None
         self.router = IntentRouter(self.tracer, self.small_device) if self.config.use_router else None
-        # the planner: MODELS[config.llm], its weights in 16, 8 or 4 bits (config.llm_precision)
+        # the planner: MODELS[config.llm], its weights in 16, 8 or 4 bits (config.llm_precision). The PLANNER stage
+        # may swap in the code model for a request; a 16-bit planner waits in CPU RAM meanwhile (self.parked_llms)
         self.llm = load_llm(self.tracer, self.config.llm, self.device, self.config.llm_precision)
+        self.parked_llms = {}
         self.perception = Perception(self.tracer, self.small_device)
         self.all_tools = all_tools()  # generator models load the first time each tool is called
         self.tools = {}
@@ -247,7 +251,6 @@ class Agent:
         cfg, t = self.config, self.tracer
         t.reset()
         t.verbosity, t.color = cfg.verbosity, cfg.color  # settings may have changed since __init__
-        self.llm.date = cfg.prompt_date
         self.tools = {name: tool for name, tool in self.all_tools.items() if name in cfg.enabled_tools}
         run_dir = cfg.output_dir / datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
         while run_dir.exists():  # two runs in the same second
@@ -288,6 +291,10 @@ class Agent:
             self.router = self.router or IntentRouter(t, self.small_device)
             self.router.threshold = cfg.router_threshold
             offered, _ = self.router.route(prompt, offered)
+
+        # ---- 2a. PLANNER: plain Python picks the LLM: a code change -> the code model (CODE_TOOLS, CODE_CHANGE) ----
+        self._pick_planner(offered, prompt)
+        self.llm.date = cfg.prompt_date
         if "run_script" in offered and calculates_from_a_file(prompt):
             # the LLM never does the arithmetic: until a script has run, the work is not done (see PENDING_CHECK).
             # Said here, not in the system prompt: a rule about args there made Llama invent args for word_count.py
@@ -711,6 +718,62 @@ class Agent:
         loaded for this request names them: then the completion check asks about them too."""
         return [name for name in offered if name not in used
                 and (self.tools[name].check_unused or name in self.skill_tools)]
+
+    def _pick_planner(self, offered, prompt):
+        """
+        PLANNER: which LLM plans this request. One the ROUTER sent to the code tools (CODE_TOOLS in config.py) that asks
+        for code to be changed (CODE_CHANGE: fix, write, add, ...) goes to the code model; anything else, a question
+        about code included, to HarnessConfig.llm. The router picks the model as well as the tools. The code model
+        loads in 4 bits, so only on an NVIDIA GPU, and only if download_models.py fetched it.
+        """
+        cfg = self.config
+        code = sorted(CODE_TOOLS & set(offered))
+        change = re.search(CODE_CHANGE, prompt, re.I) if code else None
+        want, but = cfg.llm, ""
+        if cfg.route_planner and code and not change:
+            but = ", but the request changes no code (no fix, write, add, ...)"
+        elif cfg.route_planner and change and cfg.llm != "code_llm":
+            if self.device != "cuda":
+                but = ", but the code model needs an NVIDIA GPU (it loads in 4 bits)"
+            elif not downloaded(MODELS["code_llm"]):
+                but = ", but the code model isn't downloaded (python download_models.py code_llm)"
+            else:
+                want = "code_llm"
+        swap = want != self.llm.key
+        if not swap and not cfg.route_planner:
+            return  # one planner for everything: nothing to decide
+        with self.tracer.stage("PLANNER", "python", "agent._pick_planner() (no ML)", "the tools the router offered",
+                               "which LLM plans") as ev:
+            moved = self._put_away_planner() if swap else ""
+            ev.summary = ((f"code tools offered ({', '.join(code)})" if code else "no code tools offered")
+                          + (f" and the request says '{change.group(0)}'" if change else "") + but
+                          + f" -> {MODELS[want]} plans this request" + (f"; {moved}" if moved else ""))
+            ev.details = {"code_tools": code, "change": change and change.group(0), "planner": MODELS[want]}
+        if swap:
+            back = self.parked_llms.pop(want, None)
+            # back from CPU RAM (it moves to the GPU at its first LLM stage), or loaded from disk
+            self.llm = back or load_llm(self.tracer, want, self.device,
+                                        cfg.llm_precision if want == cfg.llm else "bf16")
+
+    def _put_away_planner(self):
+        """One planner on the GPU at a time. A 16-bit one waits in CPU RAM and comes back in a second or two
+        (LocalLLM._ensure_on_gpu); a 4-bit one can't be parked (LocalLLM.can_park), so it is freed and loaded again
+        from disk the next time it is wanted."""
+        old, name = self.llm, self.llm.model_id
+        if old.can_park:
+            if old.on_gpu and self.device == "cuda":
+                old.model.to("cpu")
+                old.on_gpu = False
+            self.parked_llms[old.key] = old
+            how = f"parked {name} in CPU RAM"
+        else:
+            how = f"freed {name} ({old.precision} weights can't be parked; it loads again when next needed)"
+        self.llm = old = None
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            how += f", {gpu_free_gb():.1f} GB free"
+        return how
 
     def _make_room_on_gpu(self, tool):
         """

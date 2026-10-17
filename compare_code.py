@@ -203,7 +203,8 @@ def main():
     keys = [args[args.index("--llm") + 1]] if "--llm" in args else ["llm", "code_llm"]
     tasks = [t for t in TASKS if t in args] or list(TASKS)
     agent = Agent(HarnessConfig(verbosity=0, color=False, ask_before_acting=False, use_agents_md=False,
-                                use_skills=True, effort="medium", llm=keys[0]))
+                                use_skills=True, effort="medium", llm=keys[0],
+                                route_planner=False))  # one planner per pass: the one measured
     folder = OUTPUT_DIR / time.strftime("code_comparison_%Y%m%d_%H%M%S")
     rows = {}
     for i, task in enumerate(tasks):

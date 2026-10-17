@@ -26,8 +26,10 @@ config = HarnessConfig(
     guard_tool_outputs=True,   # ... and on the reference passages and files the tools read (indirect injection)
     ask_before_acting=True,    # answer y/n in the console before run_script runs code
     use_router=True,      # zero-shot classifier decides which tools the LLM sees
+    route_planner=True,   # a request that changes code is planned by the code model (the PLANNER stage)
     temperature=0.0,      # 0 = deterministic
-    trellis_backend="local",   # 3D tool: "local" (WSL server, started automatically) or "remote" (Hugging Face Space)
+    # 3D tool: "local" (WSL server, Windows only, started automatically) or "remote" (Hugging Face Space)
+    trellis_backend=HarnessConfig.trellis_backend,
     open_report=True,     # open the HTML report in your browser after each run
 )
 
