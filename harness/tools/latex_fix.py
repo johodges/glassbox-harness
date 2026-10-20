@@ -18,7 +18,7 @@ import difflib
 import re
 from pathlib import Path
 
-from .base import Refusal, Tool
+from .base import Refusal, Tool, approve_in_tool
 from .documents import read_text_keep_newlines, write_text_keep_newlines
 from .files import rel
 from .latex_audit import (CHECKS, audit, counts_of, last_ledger, one_line, paragraph, snippet, squash,
@@ -139,22 +139,8 @@ def remember(ledger, root, main, tree, facts, ctx):
 
 
 def approve(ctx, question):
-    """APPROVAL, as in agent.py: a person answers y/n (config.ask_before_acting off = yes without asking)."""
-    agent = ctx.agent
-    config = getattr(agent, "config", None) or ctx.config
-    with ctx.tracer.stage("APPROVAL", "python", "input(): a person answers (no ML)", "a likely fix",
-                          "yes or no") as ev:
-        if config is not None and not config.ask_before_acting:
-            answer = "y (ask_before_acting is off: approved without asking)"
-        else:
-            try:
-                answer = (agent.ask_user if agent else input)(f"\n     {question} [y/n] ")
-            except EOFError:
-                answer = "n (no console to ask in)"
-        approved = str(answer).strip().lower()[:1] == "y"
-        ev.summary = f"the person answered '{str(answer).strip()}'"
-        ev.details = {"question": question, "answer": str(answer), "approved": approved}
-    return approved
+    """APPROVAL for one likely fix (base.approve_in_tool: config.ask_before_acting off = yes without asking)."""
+    return approve_in_tool(ctx, question, "a likely fix")
 
 
 # ---- the tools -----------------------------------------------------------------------------------------------------------

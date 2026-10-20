@@ -5,8 +5,8 @@ functions put its text into the right place in the file's XML (python-pptx / pyt
 
 import difflib
 
-from .base import Tool
-from .documents import heading_level
+from .base import Refusal, Tool
+from .documents import accepted_text, heading_level, review_marks
 from .files import check_written_text, rel, resolve, working_copy
 
 
@@ -144,12 +144,12 @@ class UpdateWordTool(Tool):
             else:
                 everything = doc.paragraphs
                 headings = [i for i, p in enumerate(everything) if heading_level(p)]
-                match = closest_heading(heading, [everything[i].text for i in headings])
+                texts = {i: accepted_text(everything[i]._p) for i in headings}
+                match = closest_heading(heading, list(texts.values()))
                 if match is None:
                     raise ValueError(f"There is no heading \"{heading}\" in {source.name}. Its headings are: "
-                                     f"{', '.join(everything[i].text for i in headings)}. Use one of them, or mode "
-                                     "\"add\".")
-                start = next(i for i in headings if everything[i].text == match)
+                                     f"{', '.join(texts.values())}. Use one of them, or mode \"add\".")
+                start = next(i for i in headings if texts[i] == match)
                 anchor = everything[start]
                 level, body = heading_level(anchor), []
                 for p in everything[start + 1:]:
@@ -157,6 +157,14 @@ class UpdateWordTool(Tool):
                     if other is not None and other <= level:
                         break
                     body.append(p)
+                # Replacing the section deletes its paragraphs, and with them any reviewer's tracked changes and the
+                # anchors of their comments, without a trace. A reviewed section is edited with track changes instead
+                marks = review_marks([p._p for p in body])
+                if marks["revisions"] or marks["comments"]:
+                    who = f" by {', '.join(marks['authors'])}" if marks["authors"] else ""
+                    raise Refusal(f"The section \"{match}\" has {marks['revisions']} tracked change(s) and "
+                                  f"{marks['comments']} comment(s){who}. Replacing it would delete them, so it was "
+                                  "not changed. Edit it with track changes (redline_docx), or add a new section.")
                 style = body[0].style if body else doc.styles["Normal"]
                 for p in body:
                     p._p.getparent().remove(p._p)

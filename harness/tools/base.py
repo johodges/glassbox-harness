@@ -51,6 +51,28 @@ def find_file(path, run_dir):
     return None
 
 
+def approve_in_tool(ctx, question, what="a change"):
+    """
+    APPROVAL for one step inside a tool (fix_latex's likely fixes, a deleted slide, another author's changes
+    accepted), as agent.py asks before a whole tool call: a person answers y/n in the console.
+    HarnessConfig.ask_before_acting (on by default; run_agent.py --yes turns it off) approves without asking.
+    """
+    agent = ctx.agent
+    config = getattr(agent, "config", None) or ctx.config
+    with ctx.tracer.stage("APPROVAL", "python", "input(): a person answers (no ML)", what, "yes or no") as ev:
+        if config is not None and not config.ask_before_acting:
+            answer = "y (ask_before_acting is off: approved without asking)"
+        else:
+            try:
+                answer = (agent.ask_user if agent else input)(f"\n     {question} [y/n] ")
+            except EOFError:
+                answer = "n (no console to ask in)"
+        approved = str(answer).strip().lower()[:1] == "y"
+        ev.summary = f"the person answered '{str(answer).strip()}'"
+        ev.details = {"question": question, "answer": str(answer), "approved": approved}
+    return approved
+
+
 class Refusal(Exception):
     """
     Raised by a tool that refuses on purpose: an input outside a correlation's valid range, a DELETE on a read-only

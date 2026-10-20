@@ -42,17 +42,62 @@ def heading_level(paragraph):
     return None
 
 
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+REVISION_TAGS = (W + "ins", W + "del", W + "moveFrom", W + "moveTo", W + "rPrChange", W + "pPrChange")
+
+
+def accepted_text(element):
+    """
+    A paragraph's text as it reads with every tracked change accepted: inserted text in, deleted text out.
+    python-docx's paragraph.text reads only runs directly under the paragraph, so text inside a tracked insertion
+    (w:ins) is invisible to it, and the LLM would never see a reviewer's additions.
+    """
+    out = []
+    for el in element.iter(W + "t", W + "tab", W + "br", W + "cr"):
+        if any(a.tag in (W + "del", W + "moveFrom") for a in el.iterancestors()):
+            continue
+        out.append((el.text or "") if el.tag == W + "t" else "\t" if el.tag == W + "tab" else "\n")
+    return "".join(out)
+
+
+def review_marks(elements):
+    """Tracked changes and comment anchors under some paragraphs -> {"revisions": n, "comments": n, "authors": [...]}."""
+    revisions, comments, authors = 0, set(), set()
+    for element in elements:
+        for el in element.iter(*REVISION_TAGS):
+            revisions += 1
+            if el.get(W + "author"):
+                authors.add(el.get(W + "author"))
+        for el in element.iter(W + "commentRangeStart", W + "commentReference"):
+            comments.add(el.get(W + "id"))
+    return {"revisions": revisions, "comments": len(comments), "authors": sorted(authors)}
+
+
 def docx_sections(path):
-    """-> [{"heading": "Results", "level": 1, "paragraphs": [...]}, ...]"""
+    """-> [{"heading": "Results", "level": 1, "paragraphs": [...]}, ...], with tracked changes accepted."""
     from docx import Document
     sections = [{"heading": "", "level": 0, "paragraphs": []}]
     for p in Document(path).paragraphs:
-        level = heading_level(p)
+        level, text = heading_level(p), accepted_text(p._p)
         if level is not None:
-            sections.append({"heading": p.text, "level": level, "paragraphs": []})
-        elif p.text.strip():
-            sections[-1]["paragraphs"].append(p.text)
+            sections.append({"heading": text, "level": level, "paragraphs": []})
+        elif text.strip():
+            sections[-1]["paragraphs"].append(text)
     return [s for s in sections if s["heading"] or s["paragraphs"]]
+
+
+def docx_review_note(path):
+    """'(12 tracked changes and 6 comments by A. Reviewer, B. Checker: the text above has the changes accepted)', or
+    '' for a document nobody has reviewed."""
+    from docx import Document
+    doc = Document(path)
+    marks = review_marks([doc.element.body])
+    if not marks["revisions"] and not marks["comments"]:
+        return ""
+    authors = set(marks["authors"]) | {c.author for c in doc.comments if c.author}
+    who = f" by {', '.join(sorted(authors))}" if authors else ""
+    return (f"({marks['revisions']} tracked change(s) and {marks['comments']} comment(s){who}: the text here has the "
+            "changes accepted; read_review shows each change and comment)")
 
 
 def xlsx_text(path, max_rows=60):
@@ -102,7 +147,7 @@ def as_text(path, numbered=False):
                 out.append(f"  speaker notes: {s['notes']}")
         return "\n".join(out)
     if ext == ".docx":
-        out = []
+        out = [note] if (note := docx_review_note(path)) else []
         for s in docx_sections(path):
             if s["heading"]:
                 out.append("#" * max(1, s["level"]) + " " + s["heading"])

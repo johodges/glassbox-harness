@@ -68,6 +68,16 @@ CODE_TOOLS = {"run_tests", "check_code", "search_code", "write_code", "create_fi
 # come with TeX Live. timeout: seconds per build; overfull_pt: smaller overfull boxes are not reported; language: the
 # spell checker's dictionary; judge: the LLM looks at each "likely" finding once (JUDGE in latex_audit.py)
 LATEX = {"timeout": 300, "overfull_pt": 1.0, "max_project_mb": 500, "language": "en", "judge": True}
+# Word and PowerPoint review (tools/word_*.py, tools/deck_*.py, OFFICE_COLLAB_DESIGN.md). Every tracked change and
+# comment carries REVIEW_AUTHOR: the model that planned the request and the person it worked for
+# (HarnessConfig.review_for), never the person's name alone, so their own revisions and the harness's stay apart.
+REVIEW_AUTHOR = "{model}, via. Glass-box harness (for {user})"
+REVIEW_INITIALS = "GBH"
+# timeout: seconds for one job in Word or PowerPoint (a PDF export hung for minutes in 3 past jobs); track_changes_on:
+# Word outputs open with track changes on, so the user's next edits are tracked too; compare: "word" uses Word's own
+# Compare and falls back to Python where Word is missing or busy, "python" never uses Word; word_check: open every
+# Word output in Word and count its revisions and comments
+OFFICE = {"timeout": 120, "track_changes_on": True, "compare": "word", "word_check": True, "max_version_mb": 200}
 CODE_CHANGE = (r"\b(?:fix(?:es|ing)?|repair|correct|write|add|implement|refactor|rewrite|change|rename|create|update)\b"
                r"|\bmake\b[^.?!]{0,40}\bpass(?:es)?\b")
 
@@ -102,6 +112,7 @@ class HarnessConfig:
     use_guard: bool = True        # run the prompt-injection classifier on the user's prompt
     guard_tool_outputs: bool = True  # ... and on the text tools bring back (search passages, files read)
     ask_before_acting: bool = True   # a person answers y/n before run_script runs code (False = yes to everything)
+    review_for: str = None        # the person in REVIEW_AUTHOR; None = GLASSBOX_USER, else git's user.name, else the login
     use_router: bool = True       # let a classifier choose which tools the LLM is shown
     use_agents_md: bool = True    # paste workspace/AGENTS.md into every system prompt (see instructions.py)
     use_skills: bool = True       # paste in a workspace/skills/*/SKILL.md when the request matches its description

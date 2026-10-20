@@ -133,6 +133,7 @@ def import_named_files(prompt, ctx, cwd=None):
             shutil.copy2(hit, copy)
         for name in (raw, str(hit), hit.name):
             ctx.imports[_key(name)] = copy.resolve()
+        ctx.facts.setdefault("imported_from", {})[str(copy.resolve())] = str(hit)  # versions.py names it by this
         imported.append((raw, copy, f"{how}: {hit}"))
     return imported
 
