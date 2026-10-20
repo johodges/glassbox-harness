@@ -54,7 +54,7 @@ from pathlib import Path
 import torch
 
 from .classifiers import InputGuard, IntentRouter, calculates_from_a_file
-from .config import CODE_CHANGE, CODE_TOOLS, EFFORT, MODELS, PROJECT_DIR, HarnessConfig
+from .config import CODE_CHANGE, CODE_TOOLS, EFFORT, MODELS, PROJECT_DIR, WORKSPACE_DIR, HarnessConfig
 from .instructions import AGENTS_FILE, agents_text, find_skills, score_skills, skill_text
 from .llm import downloaded, gpu_free_gb, load_llm
 from .perception import Perception
@@ -163,6 +163,10 @@ CLAIMS_A_CHANGE = re.compile(r"\b(?:removed|replaced|updated|changed|fixed|corre
 COMPLETION_CHECK = ("[Harness check] You have not used these offered tools: {unused}. Does the user's request "
                     "need one of them? If yes, reply with only the JSON function call, nothing else. If no, "
                     "reply with your final answer again.")
+# It asks again only after a tool ran since its last question, and at most this many times in one request. Asked
+# "audit, fix what you can and make a latexdiff", Llama stopped after each step: one question got it to fix_latex,
+# and with nothing asking again it never made the latexdiff (and named one in its answer).
+COMPLETION_CHECKS = 3
 # The same idea for work a tool left unfinished, e.g. "the script was edited but not run since" (ctx.pending).
 PENDING_CHECK = ("[Harness check] {pending}. Does the user's request need that? If yes, reply with only the JSON "
                  "function call, nothing else. If no, reply with your final answer again.")
@@ -313,6 +317,7 @@ class Agent:
                     {"role": "user", "content": user_text}]
         files, used, done_calls, answer, checked_answer, declined = [], [], {}, None, None, False
         refused = {}  # tool name -> why the harness refused it: told to the user at the end (REFUSAL NOTE)
+        asked_at = []  # COMPLETION CHECK: how many tools had run each time it asked
 
         # ---- 2c. EFFORT: how much work this request gets: a budget, thinking, checks (EFFORT in config.py) ----
         level = EFFORT[cfg.effort]
@@ -366,12 +371,14 @@ class Agent:
                     messages += [{"role": "assistant", "content": reply}, {"role": "user", "content": NOTHING_RAN_CHECK}]
                     ev.summary = "the LLM wants to finish, but no tool call has succeeded in this request"
                 continue
-            if call is None and used and (unused or pending) and not declined and checks \
-                    and checked_answer is None:
-                # ---- COMPLETION CHECK: plain Python notices unfinished work and asks the LLM once ----
+            again = not asked_at or (len(used) > asked_at[-1] and len(asked_at) < COMPLETION_CHECKS)
+            if call is None and used and (unused or pending) and not declined and checks and again:
+                # ---- COMPLETION CHECK: plain Python notices unfinished work and asks the LLM; again only after a
+                # tool has run since it last asked (a "no" ends it), and at most COMPLETION_CHECKS times ----
                 with t.stage("COMPLETION CHECK", "python", "agent.py (no ML)", "final answer + unfinished work",
                              "one more question to the LLM") as ev:
                     checked_answer = reply
+                    asked_at.append(len(used))
                     question = (COMPLETION_CHECK.format(unused=", ".join(unused)) if unused
                                 else PENDING_CHECK.format(pending="; ".join(pending)))
                     if unused and pending:  # both, in the one question: Qwen2.5-Coder 7B was asked only about an
@@ -380,6 +387,8 @@ class Agent:
                     messages += [{"role": "assistant", "content": reply}, {"role": "user", "content": question}]
                     ev.summary = (f"the LLM wants to finish, but offered tools are unused: {', '.join(unused)}"
                                   if unused else f"the LLM wants to finish, but: {'; '.join(pending)}")
+                    if len(asked_at) > 1:
+                        ev.summary += f" (question {len(asked_at)} of at most {COMPLETION_CHECKS})"
                 continue
             if call is None and not reviewed and not declined:
                 # ---- REVIEW (effort high): the LLM rereads the request and checks its own answer, once ----
@@ -805,13 +814,20 @@ class Agent:
 
     def _finish(self, prompt, answer, files, messages, run_dir):
         t = self.tracer
-        if files:
-            # ---- ANSWER CHECK: plain Python makes sure every path the answer gives is a real file ----
+        if files or invented_paths(answer, run_dir):
+            # ---- ANSWER CHECK: plain Python makes sure every path the answer gives is a real file: a garbled path
+            # to a file a tool wrote is corrected, and a path to no file at all is named under the answer ----
             with t.stage("ANSWER CHECK", "python", "agent.py (no ML)", "final answer + files written",
                          "answer with real paths") as ev:
                 answer, fixed = fix_paths(answer, files)
-                ev.summary = ("; ".join(f"{wrong} does not exist -> {right}" for wrong, right in fixed) if fixed
-                              else "every path in the answer is a real file")
+                missing = invented_paths(answer, run_dir)
+                if missing:
+                    answer += (f"\n\n[Harness: {', '.join(missing)} {'does' if len(missing) == 1 else 'do'} not "
+                               f"exist: no tool in this request made {'it' if len(missing) == 1 else 'them'}.]")
+                ev.summary = ("; ".join([f"{wrong} does not exist -> {right}" for wrong, right in fixed]
+                                        + [f"{path} does not exist, and no tool wrote a file of that name: said so "
+                                           "under the answer" for path in missing])
+                              or "every path in the answer is a real file")
         t.banner("FINAL ANSWER (text written by the LLM)")
         t.emit(answer)
         if files:
@@ -926,6 +942,9 @@ def _relative(path):
         return str(path)
 
 
+PATH_IN_TEXT = re.compile(r"[\w.:~-]*[/\\][\w./\\~-]*\.\w+")  # a word with a slash and an extension
+
+
 def fix_paths(answer, files):
     """
     Small models garble the paths they repeat: Llama 3.2 3B wrote workspace/run_.../report.docx and
@@ -945,7 +964,36 @@ def fix_paths(answer, files):
             return real[name]
         return word
 
-    return re.sub(r"[\w.:~-]*[/\\][\w./\\~-]*\.\w+", swap, answer), fixed
+    return PATH_IN_TEXT.sub(swap, answer), fixed
+
+
+def invented_paths(answer, run_dir):
+    """
+    Paths in the answer that name no file at all, after fix_paths: none in the project, workspace/ or the run folder,
+    and no file there whose path ends in it ("sections/results.tex" is the demo paper's). Asked for an audit, a fix
+    and a latexdiff, Llama 3.2 3B made no latexdiff and ended with "the latexdiff is at outputs/run_.../latexdiff.pdf".
+    Web addresses (https://..., doi.org/...) and numbers (1/2.5) are not paths. -> [path, ...] in the answer's order
+    """
+    missing = []
+    for m in PATH_IN_TEXT.finditer(answer):
+        word = m.group(0)
+        parts = [p for p in re.split(r"[/\\]", word) if p not in ("", ".", "..")]
+        if "://" in word or not re.search(r"\.[A-Za-z][A-Za-z0-9]{1,4}$", word) or not parts \
+                or (len(parts) > 1 and "." in parts[0] and "\\" not in word):  # doi.org/10.1000/x, not a file
+            continue
+        try:
+            if any(path.exists() for path in (Path(word), *(root / word for root in (PROJECT_DIR, WORKSPACE_DIR,
+                                                                                    Path(run_dir))))):
+                continue
+        except OSError:  # not a name the file system takes (a drive that doesn't exist): no file
+            pass
+        tail = [p.lower() for p in parts]
+        if any([p.lower() for p in f.parts[-len(tail):]] == tail
+               for root in (WORKSPACE_DIR, Path(run_dir)) for f in root.rglob(parts[-1])):
+            continue
+        if word not in missing:
+            missing.append(word)
+    return missing
 
 
 def _quiet_libraries(verbosity):

@@ -35,11 +35,10 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import LATEX, OUTPUT_DIR
-from .base import Tool
 from .files import rel
-from .latex_project import (CITES, HEADINGS, INPUTS, PROJECT_PARAMETERS, REFS, Source, build, build_summary,
-                            copy_project, group, latex_project, publish, read_aux, read_tex, save_json, scan,
-                            scan_summary, strip_comments)
+from .latex_project import (CITES, HEADINGS, INPUTS, PROJECT_PARAMETERS, REFS, LatexProjectTool, Source, build,
+                            build_summary, copy_project, group, latex_project, publish, read_aux, read_tex,
+                            save_json, scan, scan_summary, strip_comments)
 
 CHECKS = ("references", "crossrefs", "text")
 CATEGORIES = ("build", "references", "crossrefs", "text", "requested")  # the ledger's order; edit_tex adds "requested"
@@ -1134,7 +1133,7 @@ def last_ledger(root, ctx):
     return None
 
 
-class AuditLatexTool(Tool):
+class AuditLatexTool(LatexProjectTool):
     name = "audit_latex"
     description = ("Audit a LaTeX paper (its folder or main .tex): references, cross-references and figure numbers, "
                    "spelling and punctuation. Writes a ledger of findings, each with a file, line, evidence and a fix "

@@ -18,12 +18,13 @@ import difflib
 import re
 from pathlib import Path
 
-from .base import Refusal, Tool, approve_in_tool
+from .base import Refusal, approve_in_tool
 from .documents import read_text_keep_newlines, write_text_keep_newlines
 from .files import rel
 from .latex_audit import (CHECKS, audit, counts_of, last_ledger, one_line, paragraph, project_name, snippet, squash,
                           write_ledger)
-from .latex_project import PROJECT_PARAMETERS, build, build_summary, copy_project, latex_project, publish
+from .latex_project import (PROJECT_PARAMETERS, LatexProjectTool, build, build_summary, check_project,
+                            copy_project, latex_project, publish)
 
 
 # ---- the corrected copy ------------------------------------------------------------------------------------------------
@@ -144,7 +145,7 @@ def approve(ctx, question):
 
 
 # ---- the tools -----------------------------------------------------------------------------------------------------------
-class FixLatexTool(Tool):
+class FixLatexTool(LatexProjectTool):
     name = "fix_latex"
     description = ("Fix the errors the last audit of a LaTeX project found, on a corrected copy, then rebuild and "
                    "audit it again to verify each fix. which: 'certain' (default), 'all' (likely fixes ask a person "
@@ -262,7 +263,7 @@ def words_pattern(text):
     return re.compile(r"\s+".join(re.escape(w) for w in text.split()))
 
 
-class EditTexTool(Tool):
+class EditTexTool(LatexProjectTool):
     name = "edit_tex"
     description = ("Change words in a LaTeX project (its folder or main .tex) on a corrected copy: replace the exact "
                    "text `old` with `new`, then rebuild. Use it for an edit the user asks for in words. The change "
@@ -279,9 +280,15 @@ class EditTexTool(Tool):
                     "breaks the build is undone.")
 
     def check_request(self, args, ctx):
+        """CHECK ARGS: the project the user named (check_project), and the words they quoted (check_words)."""
+        args, where, moved = check_project(args, ctx)
+        args, words, changed = self.check_words(args, ctx)
+        return args, f"{where}; {words}", " ".join(n for n in (moved, changed) if n) or None
+
+    def check_words(self, args, ctx):
         """
-        CHECK ARGS: when the user wrote 'change "X" to "Y"', X and Y are the user's own words: the LLM's old and
-        new must be them (a small model shortens or 'improves' quoted text). -> (args, summary, note or None)
+        When the user wrote 'change "X" to "Y"', X and Y are the user's own words: the LLM's old and new must be
+        them (a small model shortens or 'improves' quoted text). -> (args, summary, note or None)
         """
         quoted = QUOTED_EDIT.findall(ctx.request or "")
         if not quoted:

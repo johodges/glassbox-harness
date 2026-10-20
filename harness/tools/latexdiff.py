@@ -18,11 +18,10 @@ import subprocess
 from pathlib import Path
 
 from ..config import LATEX
-from .base import Tool
 from .files import rel
 from .latex_audit import last_ledger, squash
-from .latex_project import (BUILD_PRODUCTS, PROJECT_PARAMETERS, build, build_summary, copy_project, latex_project,
-                            publish, read_tex)
+from .latex_project import (BUILD_PRODUCTS, PROJECT_PARAMETERS, LatexProjectTool, build, build_summary, copy_project,
+                            latex_project, publish, read_tex)
 
 # Whole words: by default latexdiff marks a one-letter change inside a word (Castellam[m]are), which a reviewer misses
 WORDS = "--config=MAXCHANGESLETTER=0"
@@ -86,7 +85,7 @@ def not_shown(ledger, changed_other, main_name, corrected):
     return notes
 
 
-class MakeLatexdiffTool(Tool):
+class MakeLatexdiffTool(LatexProjectTool):
     name = "make_latexdiff"
     description = ("Make a latexdiff PDF of a LaTeX project for review: the original against its corrected copy "
                    "(made by fix_latex or edit_tex), deletions struck through in red, additions underlined in blue.")

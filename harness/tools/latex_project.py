@@ -67,6 +67,7 @@ def latex_project(path, ctx):
     written = [p.lower() for p in Path(str(path).replace("\\", "/")).parts if p not in ("/", ".")]
     if len(written) >= 2 and _key(path) not in ctx.imports and [p.lower() for p in target.parts[-2:]] != written[-2:]:
         raise FileNotFoundError(f"There is no {path}: the nearest match, {rel(target)}, is another project.")
+    target = original_of(target, ctx)
     folder = target if target.is_dir() else target.parent
     if target.is_file() and target.suffix.lower() == ".tex" and is_main(target):
         return folder, target
@@ -81,6 +82,43 @@ def latex_project(path, ctx):
         main = next((p for p in mains if p.name == "main.tex"), mains[0])
         return main.parent, main
     raise ValueError(f"No LaTeX project in {rel(folder)}: no .tex file there has \\documentclass.")
+
+
+def original_of(path, ctx):
+    """A path in a copy this request made (copy_project: outputs/run_.../latex/corrected/latex_demo, which fix_latex
+    reports) -> the same path in the project it was copied from; any other path as it is."""
+    path, copies = Path(path).resolve(), ctx.facts.get("latex_copies", {})
+    moved = True
+    while moved:  # verify/ is a copy of corrected/, which is a copy of the project
+        moved = False
+        for copy, source in copies.items():
+            if path == Path(copy) or path.is_relative_to(copy):
+                path, moved = Path(source) / path.relative_to(copy), True
+                break
+    return path
+
+
+def check_project(args, ctx):
+    """
+    CHECK ARGS for the LaTeX tools: a path that leads to no project, in a request that names one, becomes the
+    request's project. After fix_latex reported latex_demo_corrected.pdf, Llama 3.2 3B called make_latexdiff on
+    "workspace/latex_demo_corrected", twice, then told the user that nothing had been corrected.
+    -> (args, what was checked, a note for the LLM or None)
+    """
+    try:
+        latex_project(args["path"], ctx)
+        return args, f"{args['path']} is a LaTeX project", None
+    except (OSError, ValueError):  # no such file (FileNotFoundError), outside the fence (PermissionError), no main
+        named = latex_project_named(ctx.request or "")
+        try:
+            if named is None or _key(named) == _key(args["path"]):
+                raise ValueError(named)
+            latex_project(named, ctx)
+        except (OSError, ValueError):
+            return args, f"no LaTeX project at {args['path']}, and the request names no other: the tool says why", None
+    note = (f"There is no LaTeX project at {args['path']}. The user's request names {named}, so the harness used it: "
+            f"write path=\"{named}\" for this project.")
+    return {**args, "path": named}, f"no project at {args['path']} -> {named}, the project the request names", note
 
 
 PATHLIKE = re.compile(r"[\w.~:-]*[/\\][\w./\\~:-]*\w")
@@ -116,6 +154,7 @@ def copy_project(root, ctx, name):
                           f"a copy in the run folder ({name})") as ev:
         shutil.copytree(root, dest, ignore=shutil.ignore_patterns(*BUILD_PRODUCTS))
         ev.summary = f"{rel(root)} -> {rel(dest)} ({size:.1f} MB; build products left out)"
+    ctx.facts.setdefault("latex_copies", {})[str(dest.resolve())] = str(Path(root).resolve())  # see original_of()
     return dest
 
 
@@ -581,7 +620,14 @@ PROJECT_PARAMETERS = {
 }
 
 
-class BuildLatexTool(Tool):
+class LatexProjectTool(Tool):
+    """A tool that works on a LaTeX project. CHECK ARGS: the project the user named, if the LLM's path leads to none."""
+
+    def check_request(self, args, ctx):
+        return check_project(args, ctx)
+
+
+class BuildLatexTool(LatexProjectTool):
     name = "build_latex"
     description = ("Compile a LaTeX project (its folder or main .tex) with latexmk and report the errors, undefined "
                    "references and citations, and overfull boxes, each with its file and line. Works on a copy.")
@@ -604,7 +650,7 @@ class BuildLatexTool(Tool):
         return {"artifacts": artifacts, "observations": observations}
 
 
-class ScanLatexTool(Tool):
+class ScanLatexTool(LatexProjectTool):
     name = "scan_latex"
     description = ("Map a LaTeX project: its files, headings, labels, references, citations, captions, and figure "
                    "or section numbers typed as plain text. Use it to answer questions about a paper's structure.")

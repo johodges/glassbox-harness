@@ -132,6 +132,24 @@ def test_main_file_from_a_section_file(ctx):
     assert (root, main) == (tree.resolve(), (tree / "main.tex").resolve())
 
 
+def test_check_args_takes_the_project_the_request_names(ctx):
+    """CHECK ARGS of every LaTeX tool: after fix_latex reported latex_demo_corrected.pdf, Llama called make_latexdiff
+    on workspace/latex_demo_corrected. A path to no project becomes the one the user named; a copy this request made
+    (fix_latex's corrected_copy) is its project; a real project, or a request that names none, is left alone."""
+    from harness.tools.latex_project import check_project
+    ctx.request = "Audit workspace/latex_demo, fix what you can and make a latexdiff for review"
+    args, summary, note = check_project({"path": "workspace/latex_demo_corrected"}, ctx)
+    assert args["path"] == "workspace/latex_demo" and summary.endswith("the project the request names")
+    assert note.startswith("There is no LaTeX project at workspace/latex_demo_corrected. The user's request names")
+    assert check_project({"path": "workspace/latex_demo"}, ctx)[2] is None
+    root, main = latex_project("workspace/latex_demo", ctx)
+    corrected = copy_project(root, ctx, "corrected")
+    assert latex_project(str(corrected), ctx) == (root, main)
+    assert latex_project(str(corrected / "sections" / "results.tex"), ctx) == (root, main)
+    ctx.request = "Make it shorter."
+    assert check_project({"path": "workspace/latex_demo_corrected"}, ctx)[0]["path"] == "workspace/latex_demo_corrected"
+
+
 def test_project_named_in_a_request():
     assert latex_project_named("Audit workspace/latex_demo, then fix it") == "workspace/latex_demo"
     assert latex_project_named("Run the tests in workspace/code_demo") is None

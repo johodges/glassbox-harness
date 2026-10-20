@@ -79,7 +79,7 @@ and reviewed by the author.
    |  +--- the tool result (JSON text) is appended to the conversation; loop again ---+
    |
    |-> FINAL TESTS       python       code changed since the last test run? the harness runs the tests itself
-   |-> ANSWER CHECK      python       is every file path in the answer a real file? (if tools wrote files)
+   |-> ANSWER CHECK      python       is every file path in the answer a real file? a path to no file is named
    v
  final answer (text, written by the LLM) + files on disk + report.html
 ```
@@ -502,7 +502,7 @@ What Llama 3.2 3B got wrong with these tools, and the plain-Python fix for each:
 
 | what Llama 3.2 3B did | the fix in the harness |
 |-----------------------|------------------------|
-| finished with "The converted file can be found at workspace/old_format_deck_ULRI_template.pptx": there is no such file, the deck is in outputs/run_.../ (the saved Word run made the same mistake: `workspace/run_.../report.docx`) | an ANSWER CHECK stage in agent.py: a path in the final answer that does not exist, but ends in the name of a file a tool wrote, becomes that file's real path. Paths that exist, such as the unchanged original, are left alone |
+| finished with "The converted file can be found at workspace/old_format_deck_ULRI_template.pptx": there is no such file, the deck is in outputs/run_.../ (the saved Word run made the same mistake: `workspace/run_.../report.docx`) | an ANSWER CHECK stage in agent.py: a path in the final answer that does not exist, but ends in the name of a file a tool wrote, becomes that file's real path. Paths that exist, such as the unchanged original, are left alone. A path to no file at all ("the latexdiff is at outputs/run_.../latexdiff.pdf", when no latexdiff was made) is named under the answer: "[Harness: ... does not exist: no tool in this request made it.]" |
 | sent `"layouts": "{'section': 'Divider Light Blue'}"`, a Python dict inside a string (single quotes are not JSON). After the error it called again without the choice, so the user got dark blue dividers and the answer did not say so | `validate()` reads JSON, then a Python literal, then "section: light blue" pairs |
 | sent `"layouts": "{}"` when nobody asked for a layout | the same validator |
 | asked export_pdf for `workspace/run_.../old_format_deck_ULRI_template.pptx` | nothing new: `resolve()` already looks for a bare file name in the run folder |
@@ -1606,6 +1606,23 @@ undefined string (`month = foo`); a ledger kept by a long path outside `workspac
 quote (``` `` ```) in a finding's words opened a Markdown code span; and a biblatex paper's `journaltitle` and `date`
 were reported as a missing journal and year.
 
+### One request, three steps
+
+"Audit workspace/latex_demo, fix what you can and make a latexdiff for review" takes three tool calls, and Llama
+3.2 3B stopped after each one. A real run of it showed three gaps in the harness, now closed:
+- **The COMPLETION CHECK asked only once.** It got the LLM from the audit to `fix_latex`, and then nothing asked about
+  `make_latexdiff`. Now it asks again after each tool its question led to, at most three times; a "no" ends it.
+- **The final answer named `outputs/run_.../latexdiff.pdf`**, which no tool had made, and the ANSWER CHECK said
+  "every path in the answer is a real file": it only corrected garbled paths to files a tool wrote. A path to no file
+  at all is now named under the answer.
+- **Asked again, Llama called `make_latexdiff` on `workspace/latex_demo_corrected`**, a name it built from
+  `latex_demo_corrected.pdf`. It made the same call twice, then told the user nothing had been corrected. Now every
+  LaTeX tool's CHECK ARGS uses the project the request names when the LLM's path leads to none. A copy the request
+  made (`fix_latex`'s `corrected_copy`) counts as its project.
+
+With the three fixes, the same request makes all three PDFs, after two COMPLETION CHECK questions and one CHECK ARGS
+correction.
+
 ### Measured: `compare_audit.py`
 
 `compare_audit.py` runs the audit without and with JUDGE, then `fix_latex` on the certain findings, and scores the
@@ -1798,10 +1815,12 @@ minutes to two hours, so the fixes were found with two cheaper techniques:
 | **completion check:** when the LLM tries to finish after doing part of the work with offered tools unused, the harness asks once: "You have not used these offered tools: ... If the request needs one, reply with only the JSON function call" | **6 of 6 replays, then the dry run combined** |
 
 Asking "call it if needed" without "reply with only the JSON" made the model *say* "I will call the
-combine tool" and then stop: small models announce actions they don't take. The check fires at most
-once, and only after at least one tool ran, so a plain question with a wrongly offered tool doesn't
-trigger it (`evaluate.py` stays 6/6). It is `COMPLETION_CHECK` in `agent.py`; the trace shows it as a
-COMPLETION CHECK stage.
+combine tool" and then stop: small models announce actions they don't take. The check fires only
+after at least one tool ran, so a plain question with a wrongly offered tool doesn't trigger it
+(`evaluate.py` stays 6/6). It asks again only after a tool has run since its last question (a "no" ends
+it), and at most `COMPLETION_CHECKS` (3) times: asked "audit, fix what you can and make a latexdiff",
+Llama stopped after each step, and with one question it never made the latexdiff. It is
+`COMPLETION_CHECK` in `agent.py`; the trace shows it as a COMPLETION CHECK stage.
 
 Two more lessons came out of it. The video model is not bit-for-bit repeatable on the GPU, so the
 captions, and then everything the LLM wrote after them, differed between runs: one passing replay
