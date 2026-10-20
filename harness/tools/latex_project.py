@@ -265,12 +265,49 @@ def clean_path(path, tree=None):
     return re.sub(r"^\./", "", path)
 
 
+def blg_place(message):
+    """What a .blg message names: the entry key, the .bib file and the line, where it says ('empty journal in d',
+    'Duplicate entry key: 'a' in file 'refs.bib'', '---line 18 of file refs.bib', 'BibTeX subsystem: line 14')."""
+    place = {"key": None, "file": None, "line": None}
+    m = re.search(r"-?-line (\d+) of file (\S+)", message) or re.search(r"BibTeX subsystem: line (\d+)", message)
+    if m:
+        place["line"] = int(m.group(1))
+        place["file"] = m.group(2) if m.lastindex > 1 else None
+    m = re.search(r"in file '([^']+)'|\(([^()\s]+\.bib)\)", message)
+    if m:
+        place["file"] = m.group(1) or m.group(2)
+    m = (re.search(r"\b(?:entry|key):? '([^']+)'", message) or re.search(r"\bfor [\"']([^\"']+)[\"']", message)
+         or re.search(r"\bin (\S+)$", message))  # BibTeX ends with the key: 'empty journal in d'
+    if m:
+        place["key"] = m.group(1)
+    return place
+
+
 def read_blg(text):
-    """BibTeX's .blg (or biber's): its warnings and errors, one line each."""
-    warnings = [w.strip() for w in re.findall(r"^Warning--(.+)$", text, re.M)]
-    warnings += [w.strip() for w in re.findall(r"^\[\d+\] .*?WARN - (.+)$", text, re.M)]
-    errors = [e.strip() for e in re.findall(r"^(I couldn't open .+|I found no .+|.*ERROR - .+)$", text, re.M)]
-    return {"warnings": warnings, "errors": errors}
+    """
+    BibTeX's .blg (or biber's): its warnings and errors, one line each, and each as a message with the entry, file
+    and line it names. BibTeX puts a warning's place on the next line ('--line 14 of file refs.bib'); biber names a
+    temporary copy of the .bib, whose line numbers are the .bib's own.
+    """
+    program = "biber" if re.search(r"^\[\d+\] \S+> INFO - This is Biber", text, re.M) else "BibTeX"
+    lines, messages = text.splitlines(), []
+    for i, line in enumerate(lines):
+        biber = re.match(r"^\[\d+\] \S+> (WARN|ERROR) - (.+)$", line)
+        if biber:
+            level, message = ("warning" if biber.group(1) == "WARN" else "error"), biber.group(2).strip()
+            message = re.sub(r"BibTeX subsystem: .+?\.utf8, (line \d+)", r"BibTeX subsystem: \1", message)
+        elif line.startswith("Warning--"):
+            level, message = "warning", line[len("Warning--"):].strip()
+            if i + 1 < len(lines) and lines[i + 1].startswith("--line "):
+                message += " " + lines[i + 1].strip()
+        elif re.search(r"---line \d+ of file \S+$", line) or re.match(r"I couldn't open |I found no ", line):
+            level, message = "error", line.strip()
+        else:
+            continue
+        messages.append({"level": level, "text": message, **blg_place(message)})
+    return {"program": program, "messages": messages,
+            "warnings": [m["text"] for m in messages if m["level"] == "warning"],
+            "errors": [m["text"] for m in messages if m["level"] == "error"]}
 
 
 # ---- the .aux: what each label printed as ----------------------------------------------------------------------------

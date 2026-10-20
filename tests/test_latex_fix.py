@@ -1,9 +1,11 @@
 """latex_fix.py and latexdiff.py: exact-match edits, CHECK ARGS for edit_tex, what a diff can't show, the latexdiff
 fallbacks, and the whole audit -> fix -> edit -> latexdiff chain on the demo paper."""
 
-from conftest import needs_tex, write_project
+from conftest import needs_tex, new_ctx, write_project
 
 from harness.tools import latexdiff as diff_module
+from harness.tools.files import import_named_files
+from harness.tools.latex_audit import last_ledger, project_name, write_ledger
 from harness.tools.latex_fix import EditTexTool, FixLatexTool, apply_fixes, words_pattern
 from harness.tools.latexdiff import MakeLatexdiffTool, not_shown
 from harness.tools.latex_project import copy_project, latex_project
@@ -115,3 +117,51 @@ def test_audit_fix_edit_and_latexdiff_on_the_demo(ctx):
     root, _ = latex_project("workspace/latex_demo", ctx)
     assert copy_project(root, ctx, "check")  # the original is untouched: it still has its planted errors
     assert "struture" in (root / "sections" / "introduction.tex").read_text(encoding="utf-8")
+
+
+
+OUTSIDE = {"main.tex": r"""
+    \documentclass{article}
+    \begin{document}
+    The fire grew in
+    in a room.
+    \end{document}
+"""}
+
+
+def imported(tmp_path, n):
+    """Request n names ../papers/note, a project outside workspace/: IMPORT FILES copies it into its own run folder."""
+    ctx = new_ctx(tmp_path / f"run_{n}")
+    work = tmp_path / "work"
+    work.mkdir(exist_ok=True)
+    assert import_named_files("Audit ../papers/note", ctx, cwd=work)[0][1] is not None
+    return ctx
+
+
+def test_the_last_audit_of_an_imported_project_outlives_its_run_folder(ctx, tmp_path):
+    """The copy's path changes with every run folder; the ledger is kept by the original's path, so a later request
+    finds it from its own copy. A project in workspace/ is still known by its own path."""
+    outside = write_project(tmp_path / "papers" / "note", OUTSIDE)
+    first = imported(tmp_path, 1)
+    root, _ = latex_project("../papers/note", first)
+    assert project_name(root, first) == outside.resolve().as_posix()
+    write_ledger({"project": project_name(root, first), "root": str(root), "audited": "2026-10-20T14:02",
+                  "build": "main.pdf", "findings": []}, first.run_dir)
+    later = imported(tmp_path, 2)
+    root_later, _ = latex_project("../papers/note", later)
+    assert root_later != root and last_ledger(root_later, later)["root"] == str(root)
+    assert project_name(latex_project("workspace/latex_demo", ctx)[0], ctx) == "workspace/latex_demo"
+
+
+@needs_tex
+def test_fix_the_last_audit_of_an_imported_project(tmp_path, ctx):
+    """'Audit ../papers/note', then, in another request, 'Fix the errors in the last audit of ../papers/note'."""
+    from harness.tools.latex_audit import AuditLatexTool
+    write_project(tmp_path / "papers" / "note", OUTSIDE)
+    first = imported(tmp_path, 1)
+    AuditLatexTool().run(first, "../papers/note")
+    later = imported(tmp_path, 2)
+    fixed = FixLatexTool().run(later, "../papers/note")["observations"]
+    assert fixed["summary"].startswith("1 fix(es) tried: 1 verified")  # "in in": found in request 1, fixed in 2
+    assert later.run_dir.name in fixed["corrected_copy"]
+    assert not (later.run_dir / "latex" / "original").exists()  # request 1's ledger, not a new audit

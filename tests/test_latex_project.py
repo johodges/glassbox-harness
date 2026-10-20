@@ -5,7 +5,7 @@ import textwrap
 from conftest import needs_tex, write_project
 
 from harness.tools.latex_project import (build, copy_project, engine_of, latex_project, latex_project_named,
-                                         read_aux, read_log, scan)
+                                         read_aux, read_blg, read_log, scan)
 
 LOG = textwrap.dedent(r"""
     This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025) (preloaded format=pdflatex)
@@ -86,6 +86,25 @@ def test_aux_numbers_kinds_and_lists(tmp_path):
     assert aux["bibcite"] == {"b": "1"} and aux["citations"] == ["b"]
     assert aux["toc"][0]["number"] == "1" and aux["toc"][0]["title"] == "Introduction"
     assert aux["lof"][0]["number"] == "2"
+
+
+def test_blg_messages_and_their_places():
+    """BibTeX puts a warning's place on the next line; biber names a temporary copy of the .bib (its line numbers are
+    the .bib's own), which the message no longer shows."""
+    from test_latex_audit import BIBER_BLG, BIBTEX_BLG
+    bibtex = read_blg(BIBTEX_BLG)
+    assert bibtex["program"] == "BibTeX" and len(bibtex["warnings"]) == 5 and len(bibtex["errors"]) == 2
+    places = [(m["level"], m["key"], m["file"], m["line"]) for m in bibtex["messages"]]
+    assert places == [("error", None, "refs.bib", 5), ("warning", None, "refs.bib", 14),
+                      ("error", None, "refs.bib", 18), ("warning", "nope", None, None), ("warning", "b", None, None),
+                      ("warning", "b", None, None), ("warning", "b", None, None)]
+    biber = read_blg(BIBER_BLG)
+    assert biber["program"] == "biber" and len(biber["errors"]) == 1 and len(biber["warnings"]) == 6
+    places = [(m["level"], m["key"], m["file"], m["line"]) for m in biber["messages"]]
+    assert places == [("error", None, None, 18), ("warning", "a", "refs.bib", None), ("warning", "b", "refs.bib", None),
+                      ("warning", "c", None, None), ("warning", "c", None, None), ("warning", None, None, 14),
+                      ("warning", "nope", None, None)]
+    assert "biber_tmp" not in biber["errors"][0] and biber["errors"][0].startswith("BibTeX subsystem: line 18, ")
 
 
 def test_scan_finds_commands_and_typed_numbers(ctx):

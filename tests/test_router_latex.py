@@ -29,3 +29,13 @@ def test_the_other_requests_are_untouched():
     others = [prompt for prompt, *_ in TESTS if "latex_demo" not in prompt]
     assert len(others) == 30 and {prompt: latex_rules(prompt, TOOLS) for prompt in others
                                   if latex_rules(prompt, TOOLS)} == {}
+
+
+def test_the_last_audit_of_a_project_outside_workspace(tmp_path, monkeypatch):
+    """'Fix the errors in the last audit of ../papers/note' from a folder beside it: fix_latex, and no new audit."""
+    from conftest import write_project
+    write_project(tmp_path / "papers" / "note", {"main.tex": "\\documentclass{article}\n\\begin{document}\nHi\n"
+                                                             "\\end{document}\n"})
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    assert set(latex_rules("Fix the errors in the last audit of ../papers/note.", TOOLS)) == {"fix_latex"}

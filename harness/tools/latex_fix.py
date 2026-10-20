@@ -21,7 +21,7 @@ from pathlib import Path
 from .base import Refusal, Tool, approve_in_tool
 from .documents import read_text_keep_newlines, write_text_keep_newlines
 from .files import rel
-from .latex_audit import (CHECKS, audit, counts_of, last_ledger, one_line, paragraph, snippet, squash,
+from .latex_audit import (CHECKS, audit, counts_of, last_ledger, one_line, paragraph, project_name, snippet, squash,
                           write_ledger)
 from .latex_project import PROJECT_PARAMETERS, build, build_summary, copy_project, latex_project, publish
 
@@ -297,7 +297,7 @@ class EditTexTool(Tool):
     def run(self, ctx, path, old, new):
         t = ctx.tracer
         root, main = latex_project(path, ctx)
-        ledger = last_ledger(root, ctx) or {"project": rel(root), "root": str(root),
+        ledger = last_ledger(root, ctx) or {"project": project_name(root, ctx), "root": str(root),
                                             "main": main.relative_to(root).as_posix(), "audited": None,
                                             "checks": list(CHECKS), "findings": [], "build": "not audited"}
         tree = corrected_copy(root, main, ctx, ledger)

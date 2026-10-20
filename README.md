@@ -1516,6 +1516,7 @@ suspects.
 .\.venv\Scripts\python.exe run_agent.py "Fix the errors in the last audit of workspace/latex_demo."
 .\.venv\Scripts\python.exe run_agent.py "In workspace/latex_demo, change \"a fast fire\" to \"a fast t-squared fire\" and give me a latexdiff."
 .\.venv\Scripts\python.exe run_agent.py "Audit ..\papers\fire_note.zip"     # a folder or .zip outside workspace/ is copied in
+.\.venv\Scripts\python.exe run_agent.py "Fix the errors in the last audit of ..\papers\fire_note.zip"   # a later request
 .\.venv\Scripts\python.exe compare_audit.py                                   # the audit scored against its answer key
 .\.venv\Scripts\python.exe -m pytest                                          # the unit tests (tests/, ~3 min with TeX Live)
 ```
@@ -1543,14 +1544,18 @@ contents says something else; "January 8. 2025"; and `\cite{mell2009}can`.
 
 | auditor | checks | how |
 |---------|--------|-----|
-| references | a `\cite` with no entry; an entry never cited; one work under two keys (the same DOI, or the same title and year); a key used twice; missing fields for the entry type; a DOI written as a link | `bibtexparser` + the scan |
+| references | a `\cite` with no entry; an entry never cited; one work under two keys (the same DOI, or the same title and year); a key used twice; missing fields for the entry type (biblatex's `journaltitle` and `date` count in a biblatex paper); a DOI written as a link; a reference list numbered by hand (a `refnum` field, or `\bibitem[12]{key}`) whose numbers don't follow the order of first citation, or give one number twice; what BibTeX or biber wrote in the `.blg` | `bibtexparser` + the scan + the `.blg` |
 | cross-references | a `\ref` to no `\label`; a label defined twice; a number typed by hand that names no figure, table or section ("Figure 3", "Section 4.0"), or names the wrong one; a short title in `\section[..]` or `\caption[..]` that says something other than the long one; counters set by hand | the `.aux` numbers + the scan. For "Figure 3" with two figures, the words of the sentence are compared with each caption's: one clear match makes the fix `Figure~\ref{fig:hrr}` certain |
-| text | doubled words (across line breaks and `\emph{}`); misspellings; a name spelled two ways; `..`, `,,`, a space before a comma; dates ("January 8. 2025"); straight quotes; a citation run into the next word | `pylatexenc` parses the LaTeX; the words between the commands become plain text in which every character remembers its place in the file, so every finding has a file and a line. `pyspellchecker`, with the `.bib`, the macro names and a `.wordlist` as the project's words |
+| text | doubled words (across line breaks and `\emph{}`); misspellings; a name spelled two ways; `..`, `,,`, a space before a comma; dates ("January 8. 2025"); straight quotes; a citation run into the next word; an acronym used before the sentence that defines it, or defined twice | `pylatexenc` parses the LaTeX; the words between the commands become plain text in which every character remembers its place in the file, so every finding has a file and a line. `pyspellchecker`, with the `.bib`, the macro names and a `.wordlist` as the project's words |
 
 Every finding goes into a **ledger**: `ledger.json` (for the tools), `audit_report.md` (for a person) and
 `ledger.csv` in the run folder. The latest one of each project is also saved as `outputs/ledgers/<project>.json`.
 That is how "fix the errors in the last audit" works in a later request: it is the harness's first state that lasts
-from one request to the next. Each finding has a confidence:
+from one request to the next. A project from outside `workspace/` is copied into each request's own run folder, so
+its ledger is kept by the original's path (IMPORT FILES records where each copy came from), not the copy's:
+"Fix the errors in the last audit of ..\papers\fire_note.zip" finds the audit an earlier request made. The run's
+`report.html` shows `audit_report.md` as a page section, with links to the original, corrected and latexdiff
+PDFs. Each finding has a confidence:
 - **certain**: the fix follows from facts. "in in" becomes "in"; one common word is one letter from "struture";
   exactly one caption matches the sentence.
 - **likely**: a checker suspects it. JUDGE may confirm or reject it, and `fix_latex` asks a person (APPROVAL) before
@@ -1570,6 +1575,37 @@ it is diffed again without maths markup, then the whole diff in another style (C
 file goes in unmarked and is named. The answer also lists what a marked-up PDF can't show: a `.bib` change, the
 preamble, a spacing fix, a table-of-contents title.
 
+### Four checks added after phase 1
+
+Each one is built not to fire on a paper that is right, because on a real paper a false alarm costs more than a
+missed one (see the next sections):
+- **Acronyms** (text, likely). A definition is "Fire Dynamics Simulator (FDS)": the letters of FDS, last to first, are
+  found in order in the words before the bracket, the F starting a word (Schwartz and Hearst's rule, 2003), so "the
+  peak of the fire (FP)" defines nothing. Only acronyms the paper defines are checked, in its prose and in reading
+  order (an `\input` file's text comes where its `\input` stands). Headings, captions and the preamble don't count,
+  for a use or a definition: they are read on their own, in a table of contents or a list of figures. One
+  definition in the abstract and one in the body is the custom, and allowed. An acronym right after a command
+  (`\ac{FDS}`) is its argument: the acronym package writes the definition itself.
+- **A reference list numbered by hand** (references, needs a person): a `refnum`-like field in the `.bib` (as in the
+  CA report) or `\bibitem[12]{key}`. In the order the text first cites them, the numbers should rise. The longest
+  rising run is taken as the intended order, and every entry outside it is reported ("'c' is numbered 2, but it is
+  the 3rd source the text cites"). If fewer than half the numbers are in that run, the list follows another order
+  (by author, say), and nothing is reported. A number given to two entries is reported too.
+- **The `.blg`** (references, needs a person): BibTeX's and biber's warnings and errors, each at the `.bib` entry or
+  line it names (BibTeX puts the line on the next line of the log; biber names a temporary copy of the `.bib`,
+  whose line numbers are the `.bib`'s own), one finding per place. What the references auditor already reports is
+  left out: a citation with no entry, a key entered twice, an empty field it named.
+- **JUDGE for "the same work twice"**: this finding has no fix (merging two entries changes every `\cite` of one),
+  so JUDGE is shown both `.bib` entries as written and asked if they are one work. Its yes confirms the finding,
+  which stays likely, because a person merges them; its no rejects it ("another edition, volume, part or year
+  counts as different").
+
+Writing them turned up four older bugs, now fixed: `bibtexparser` stopped the whole audit at a `.bib` with an
+undefined string (`month = foo`); a ledger kept by a long path outside `workspace/` had a file name past Windows'
+260 characters; `audit_report.md` turned every ".." into ".", including the old text of the ".." fix, and a LaTeX
+quote (``` `` ```) in a finding's words opened a Markdown code span; and a biblatex paper's `journaltitle` and `date`
+were reported as a missing journal and year.
+
 ### Measured: `compare_audit.py`
 
 `compare_audit.py` runs the audit without and with JUDGE, then `fix_latex` on the certain findings, and scores the
@@ -1583,10 +1619,13 @@ results against the answer key:
 | certain fixes applied and verified | 5 of 5 | 6 of 6 |
 | time | ~20 s, nearly all of it `latexmk` | the same + ~1 s per JUDGE prompt |
 
-JUDGE was asked twice. It confirmed "Castellamare" → "Castellammare", which then became certain and was fixed. It
-said no to dropping `[Results]` from `\section[Results]{Measured Peak Heat Release Rates}`, and wrote the line back
-unchanged: a short table-of-contents title is a legitimate LaTeX feature, so this is a judgement call, and the
-finding stays in the ledger marked rejected. `fix_latex(which="A006")` applies it anyway, after a person says yes.
+JUDGE was asked three times, in 4 s in all. Shown both `.bib` entries of the FDS guide, it said they are one work
+"because they have the same title, authors, institution, year, and DOI": the finding is confirmed and stays likely,
+for a person to merge the two keys. It confirmed "Castellamare" → "Castellammare", which then became certain and was
+fixed. It said no to dropping `[Results]` from `\section[Results]{Measured Peak Heat Release Rates}`, and wrote the
+line back unchanged: a short table-of-contents title is a legitimate LaTeX feature, so this is a judgement call, and
+the finding stays in the ledger marked rejected. `fix_latex(which="A006")` applies it anyway, after a person says
+yes.
 Fixing "Castellammare" (one letter longer) pushed that line 1.5 pt into the margin: the re-audit reports the new
 overfull box, and the fix stays verified.
 
@@ -1606,8 +1645,11 @@ rules changed:
 - **A spelling used twice or more is taken as intended.** The rest are listed in one finding per file ("pyfdstools
   (2x), thermophoretic (1x), webinar (3x): add them to .wordlist").
 
-After the change: **2 findings**, the real error and that list. The demo still scores 12 of 12. The price is recall:
-"transfered" or "refered" now pass as inflections of real words.
+After the change: **2 findings** from the three auditors, the real error and that list (the build adds 5 overfull
+boxes, lines up to 20 pt into the margin). The demo still scores 12 of 12. The price is recall: "transfered" or
+"refered" now pass as inflections of real words. The four checks added since find nothing more in the proposal: it
+defines RMWG, PBD and ESS before using them in prose, has no `.bib`, and defines WUI only in a heading (which
+doesn't count).
 
 Three more bugs only a real paper showed:
 - **Brackets in the log.** TeX's log marks each file it opens with `(./file.tex` and closes it with `)`. The parser
@@ -1627,9 +1669,9 @@ UNDO, CHANGED FILES, LATEXDIFF, BUILD DIFF, UNMARKED. Only JUDGE involves a mode
 `pylatexenc`, `bibtexparser<2` and `pyspellchecker` come with `requirements.txt`. `setup.ps1` and `setup.sh` say
 which TeX programs are missing.
 
-**Not done yet:** biber's `.blg` beyond its warnings; acronyms used before they are defined; a reference list numbered
-by hand against the citation order; JUDGE for the "same work twice" findings; a ledger for an imported project that
-outlives its run folder (it is keyed by the copy's path).
+**Not done yet:** an acronym the paper never defines (most are names everyone knows: NIST, PDF), or defines only in a
+heading, as the planning proposal does with WUI; one definition per chapter, the custom in long reports, is reported
+as "defined twice"; a duplicate that JUDGE confirms is not merged, because that changes every `\cite` of one key.
 
 ## Quantization: fewer bits per weight
 

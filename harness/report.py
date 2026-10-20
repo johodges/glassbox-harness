@@ -1,12 +1,15 @@
 """
 Writes report.html for a run: the console, replayed. The same banners, stages, colours and lines that run_agent.py
 prints (Tracer.log, recorded at any verbosity), with every STEP and every stage folding open and shut, the files the
-tools made shown where they were made, and the data-flow summary at the end.
+tools made shown where they were made, and the data-flow summary at the end. A LaTeX audit run also gets its
+audit_report.md as a page section, with links to the original, corrected and latexdiff PDFs.
 """
 
 import base64
 import html
 import json
+import os
+import re
 from pathlib import Path
 
 from .trace import KINDS
@@ -70,6 +73,18 @@ img, video { max-width:100%; border-radius:4px; margin-top:6px; display:block; }
 audio { width:100%; max-width:520px; margin-top:6px; display:block; }
 model-viewer { width:100%; height:380px; margin-top:6px; background:var(--code); border-radius:4px; }
 a { color:#6cb6ff; }
+.md { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--text); background:var(--panel);
+      border:1px solid var(--border); border-radius:6px; padding:4px 16px 10px; overflow-wrap:anywhere; }
+.md h3, .md h4 { font: 600 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color:#fff; margin:14px 0 6px; }
+.md h4 { font-size:14px; }
+.md ul { padding-left:20px; margin:6px 0; }
+.md li { margin:3px 0; }
+.md code { font-family:"Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size:12.5px; background:var(--code);
+           border-radius:3px; padding:0 3px; }
+.md table { border-collapse:collapse; display:block; overflow-x:auto; margin:6px 0; }
+.md th, .md td { border:1px solid var(--border); padding:2px 10px; text-align:left; }
+.md th { color:#fff; }
+.pdfs { margin:0 0 10px; padding-left:20px; }
 """
 
 SCRIPT = """
@@ -213,6 +228,118 @@ def _flow_summary(result):
     return rows
 
 
+# ---- a LaTeX audit: audit_report.md as HTML, and the three PDFs -------------------------------------------------------
+# As CommonMark: `x`, or ``x`` when x has a ` in it; \` outside a span is a backtick that opens none
+CODE_SPAN = re.compile(r"(?<![`\\])(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
+PDF_KINDS = {"original": "the original, as built", "corrected": "the corrected copy (fix_latex, edit_tex)",
+             "latexdiff": "the latexdiff for review: deletions struck through, additions underlined"}
+
+
+def _bold(text):
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html.escape(text)).replace("\\`", "`")
+
+
+def _inline(text):
+    """One line of Markdown -> HTML: `code` spans and **bold**; everything else escaped."""
+    out, i = [], 0
+    for m in CODE_SPAN.finditer(text):
+        body = m.group(2)
+        if body.startswith(" ") and body.endswith(" ") and body.strip():
+            body = body[1:-1]  # `` ``x'' `` -> ``x''
+        out += [_bold(text[i:m.start()]), f"<code>{html.escape(body)}</code>"]
+        i = m.end()
+    return "".join(out) + _bold(text[i:])
+
+
+def markdown_html(text):
+    """
+    The Markdown that audit_report.md uses -> HTML, in plain Python: # headings (two levels below the page's own),
+    paragraphs, - lists (an indented line continues an item), | tables | with a |---| line under the header, `code`
+    and **bold**.
+    """
+    out, para, items, rows = [], [], [], []
+
+    def flush():
+        if para:
+            out.append(f"<p>{_inline(' '.join(para))}</p>")
+        if items:
+            out.append("<ul>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + "</ul>")
+        if rows:
+            head = len(rows) > 1 and all(re.fullmatch(r":?-+:?", c) for c in rows[1])
+            body = [r for k, r in enumerate(rows) if not (head and k == 1)]
+            out.append("<table>" + "".join(
+                "<tr>" + "".join(f"<{'th' if head and k == 0 else 'td'}>{_inline(c)}</{'th' if head and k == 0 else 'td'}>"
+                                 for c in r) + "</tr>" for k, r in enumerate(body)) + "</table>")
+        para.clear(), items.clear(), rows.clear()
+
+    for line in text.splitlines():
+        s = line.strip()
+        heading = re.match(r"(#{1,6})\s+(.*)", s)
+        if s.startswith("|"):
+            if para or items:
+                flush()
+            rows.append([c.strip() for c in s.strip("|").split("|")])
+        elif heading:
+            flush()
+            level = min(6, len(heading.group(1)) + 2)
+            out.append(f"<h{level}>{_inline(heading.group(2))}</h{level}>")
+        elif s.startswith(("- ", "* ")):
+            if para or rows:
+                flush()
+            items.append(s[2:])
+        elif not s:
+            flush()
+        elif items and line[:1].isspace():
+            items[-1] += " " + s
+        else:
+            if items or rows:
+                flush()
+            para.append(s)
+    flush()
+    return "\n".join(out)
+
+
+def _link(path, run_dir, note):
+    href = os.path.relpath(path, run_dir).replace("\\", "/")
+    where = "" if Path(path).parent == run_dir else f" (from {html.escape(Path(path).parent.name)})"
+    return f"<li><a href='{html.escape(href)}'>{html.escape(Path(path).name)}</a>{where}: {html.escape(note)}</li>"
+
+
+def latex_audit_section(run_dir):
+    """
+    A run of the LaTeX tools: the run folder's audit_report.md as HTML, and links to <project>_original.pdf,
+    _corrected.pdf and _latexdiff.pdf (latex_project.publish names them so). A PDF this run didn't make, but an earlier
+    run of the same audit did (the ledger says which), is linked there. -> HTML lines, or [] for any other run.
+    """
+    run_dir = Path(run_dir)
+    report, ledger_path = run_dir / "audit_report.md", run_dir / "ledger.json"
+    ledger = {}
+    if ledger_path.is_file():
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            ledger = {}
+    names = [Path(ledger["root"]).name] if ledger.get("root") else []
+    names += [p.name[:-len("_latexdiff.pdf")] for p in sorted(run_dir.glob("*_latexdiff.pdf"))]
+    earlier = {"original": ledger.get("run_dir"), "corrected": (ledger.get("corrected") or {}).get("run_dir")}
+    links = []
+    for name in dict.fromkeys(names):
+        for kind, note in PDF_KINDS.items():
+            here = run_dir / f"{name}_{kind}.pdf"
+            there = Path(earlier[kind]) / here.name if earlier.get(kind) else None
+            pdf = here if here.is_file() else there if there and there.is_file() else None
+            if pdf:
+                links.append(_link(pdf, run_dir, note))
+    if not report.is_file() and not links:
+        return []
+    out = ["<h2 id='audit'>The audit: audit_report.md and the PDFs</h2>"]
+    if links:
+        out.append("<ul class='pdfs'>" + "".join(links) + "</ul>")
+    if report.is_file():
+        out.append(f"<div class='md'>{markdown_html(report.read_text(encoding='utf-8', errors='replace'))}</div>")
+    return out
+
+
 def write_report(result, path):
     run_dir = Path(path).parent
     out = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
@@ -225,6 +352,7 @@ def write_report(result, path):
            f" &middot; {html.escape(str(run_dir))}</div>",
            "<h2>Final answer (written by the LLM)</h2>",
            f"<div class='answer'>{html.escape(result.answer)}</div>"]
+    out += latex_audit_section(run_dir)
 
     if result.files:
         out.append("<h2>Files the tools made</h2>")

@@ -3,15 +3,19 @@ audit_latex: three auditors read a LaTeX project and write every problem they fi
 
   BUILD + SCAN        latex_project.py: the PDF, the .log, the .aux, and a map of every heading, label and citation
   AUDIT: REFERENCES   bibtexparser reads the .bib: citations with no entry, entries never cited, the same work twice,
-                      missing fields, DOIs written as links
+                      missing fields, DOIs written as links, a list numbered by hand against the order of citation;
+                      and what BibTeX or biber said in the .blg
   AUDIT: CROSS-REFS   the .aux says what each \\label printed as: references to labels that don't exist, numbers typed
                       by hand ("Figure 3") that name the wrong figure or none, table-of-contents titles that differ
                       from the heading
   AUDIT: TEXT         pylatexenc parses the LaTeX; the words between the commands become plain text, each character
                       remembering its place in the file: doubled words, misspellings (pyspellchecker), a name spelled
-                      two ways, "..", dates, quotes, a citation run into the next word
-  JUDGE               the LLM, one short question per "likely" finding that has a fix: is it an error?
-  LEDGER              ledger.json, audit_report.md and ledger.csv in the run folder (and outputs/ledgers/)
+                      two ways, "..", dates, quotes, a citation run into the next word, acronyms used before they are
+                      defined or defined twice
+  JUDGE               the LLM, one short question per "likely" finding that has a fix (is it an error?), or that says
+                      two .bib entries are one work (it sees both: are they?)
+  LEDGER              ledger.json, audit_report.md and ledger.csv in the run folder (and outputs/ledgers/, by the
+                      project's path, or by the original's path for a project imported from outside workspace/)
 
 Every finding has a file, a line, the words it is about (evidence), why, a fix if one follows from the facts, and a
 confidence:
@@ -22,6 +26,7 @@ The LLM never makes a finding certain on its own say-so, and never writes a file
 """
 
 import csv
+import hashlib
 import json
 import re
 import time
@@ -32,9 +37,9 @@ from pathlib import Path
 from ..config import LATEX, OUTPUT_DIR
 from .base import Tool
 from .files import rel
-from .latex_project import (CITES, HEADINGS, PROJECT_PARAMETERS, REFS, Source, build, build_summary, copy_project,
-                            latex_project, publish, read_aux, read_tex, save_json, scan, scan_summary,
-                            strip_comments)
+from .latex_project import (CITES, HEADINGS, INPUTS, PROJECT_PARAMETERS, REFS, Source, build, build_summary,
+                            copy_project, group, latex_project, publish, read_aux, read_tex, save_json, scan,
+                            scan_summary, strip_comments)
 
 CHECKS = ("references", "crossrefs", "text")
 CATEGORIES = ("build", "references", "crossrefs", "text", "requested")  # the ledger's order; edit_tex adds "requested"
@@ -142,6 +147,8 @@ REQUIRED = {  # the fields BibTeX's standard styles need for each entry type ("a
     "mastersthesis": ("author", "title", "school", "year"),
     "manual": ("title",), "misc": ("title",), "unpublished": ("author", "title", "note"),
 }
+BIBLATEX_NAMES = {"journal": "journaltitle", "year": "date", "school": "institution"}  # biblatex's own names for them
+BIBLATEX = re.compile(r"\\addbibresource\b|\\usepackage\s*(?:\[[^\]]*\])?\s*\{[^}]*\bbiblatex\b")
 DOI = re.compile(r"^10\.\d{4,9}/\S+$")
 DOI_LINK = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
 
@@ -149,10 +156,19 @@ DOI_LINK = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
 def read_bib(path, tree):
     """A .bib -> (its Source, its entries). bibtexparser reads the fields; a regex finds where each entry starts."""
     import bibtexparser
+    from bibtexparser.bibdatabase import UndefinedString
     from bibtexparser.bparser import BibTexParser
-    src = Source(path, tree)
-    parser = BibTexParser(common_strings=True, ignore_nonstandard_types=False)
-    parsed = bibtexparser.loads(src.text, parser=parser).entries
+    src, undefined = Source(path, tree), {}
+    while True:
+        parser = BibTexParser(common_strings=True, ignore_nonstandard_types=False)
+        parser.bib_database.strings.update(undefined)
+        try:
+            parsed = bibtexparser.loads(src.text, parser=parser).entries
+            break
+        except UndefinedString as e:  # "month = foo" with no @string{foo}: BibTeX prints it empty (and warns)
+            if e.args[0] in undefined:
+                raise
+            undefined[e.args[0]] = ""
     starts = {}
     for m in re.finditer(r"@(\w+)\s*[{(]\s*([^,\s]+)\s*,", src.text):
         if m.group(1).lower() not in ("string", "preamble", "comment"):
@@ -175,7 +191,131 @@ def normal_title(title):
     return re.sub(r"[^a-z0-9]", "", re.sub(r"\\[A-Za-z]+", "", title.lower()))
 
 
-def audit_references(found, tree, ctx):
+def entry_text(src, e, limit=1200):
+    """A .bib entry as written, '@techreport{key, ... }': what JUDGE is shown."""
+    i = src.text.find("{", e["pos"], e["end"] + 1)
+    g = group(src.text, i) if i >= 0 else None
+    end = g[1] if g else src.text.find("\n@", e["end"])  # unbalanced braces: up to the next entry
+    return src.text[e["pos"]:end if end >= 0 else None].strip()[:limit]
+
+
+# A field that holds the number a hand-numbered list prints (the CA report's 'refnum'): refnum, refnumber, ref_no,
+# citenum, bibnum. Not 'number', which is a report's or an issue's number.
+NUMBER_FIELD = re.compile(r"^(?:ref|cite|bib)[_-]?(?:num|number|no)$")
+
+
+def ordinal(n):
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def increasing_run(numbers):
+    """The longest run of numbers that keeps rising, in their order (a longest increasing subsequence) -> the
+    indexes in it. 1, 10, 2, 3, 4 -> the indexes of 1, 2, 3, 4: '10' is the one out of order."""
+    length, previous = [], []  # the longest rising run that ends at numbers[i], and the index before i in it
+    for i, n in enumerate(numbers):
+        j = max((j for j in range(i) if numbers[j] < n), key=lambda j: length[j], default=None)
+        length.append(1 if j is None else length[j] + 1)
+        previous.append(j)
+    i = max(range(len(numbers)), key=lambda i: length[i], default=None)
+    run = set()
+    while i is not None:
+        run.add(i)
+        i = previous[i]
+    return run
+
+
+def hand_numbers(found, bibs):
+    """
+    A reference list numbered by hand: a 'refnum'-like field in the .bib, or \\bibitem[12]{key}. The numbers should
+    follow the order in which the text first cites each source, as \\cite numbers them itself. -> findings for the
+    entries out of that order, and numbers given twice (needs a person: renumbering is a person's decision).
+    """
+    numbered = {}  # key -> (number, its Source, start, end)
+    for src, bib in bibs.values():
+        for e in bib:
+            for field, value in e["fields"].items():
+                if NUMBER_FIELD.match(field) and str(value).strip().isdigit():
+                    m = re.compile(rf"\b{re.escape(field)}\s*=\s*[{{\"]?\s*{re.escape(str(value).strip())}",
+                                   re.I).search(src.text, e["pos"])
+                    start, end = (m.start(), m.end()) if m else (e["pos"], e["end"])
+                    numbered.setdefault(e["key"], (int(value), src, start, end))
+    for src in found["sources"].values():
+        for m in re.finditer(r"\\bibitem\s*\[\s*(\d+)\s*\]\s*\{([^}]+)\}", src.clean):
+            numbered.setdefault(m.group(2).strip(), (int(m.group(1)), src, m.start(), m.end()))
+    if len(numbered) < 2:
+        return []
+    findings, first = [], {}
+    for c in found["cites"]:
+        if c["cmd"] != "nocite":  # \nocite lists a source without citing it in the text
+            for key in c["keys"]:
+                first.setdefault(key, c)
+    for number, count in Counter(n for n, *_ in numbered.values()).items():
+        if count > 1:
+            keys = [k for k, (n, *_) in numbered.items() if n == number]
+            for key in keys[1:]:
+                _, src, start, end = numbered[key]
+                findings.append(finding("references", "reference number given twice", src, start, end,
+                                        f"{', '.join(repr(k) for k in keys)} are all numbered {number}",
+                                        "needs a person"))
+    order = [k for k in first if k in numbered]
+    numbers = [numbered[k][0] for k in order]
+    rising = increasing_run(numbers)
+    if len(rising) * 2 < len(numbers):
+        return findings  # most numbers don't follow the citations: the list has another order (by author, say)
+    shown = ", ".join(map(str, numbers[:12])) + (", ..." if len(numbers) > 12 else "")
+    rank = {key: k for k, key in enumerate(first, 1)}  # 1 for the first source the text cites
+    for i, key in enumerate(order):
+        if i not in rising:
+            number, src, start, end = numbered[key]
+            c = first[key]
+            findings.append(finding("references", "reference number out of citation order", src, start, end,
+                                    f"'{key}' is numbered {number}, but it is the {ordinal(rank[key])} source the "
+                                    f"text cites (first at {c['file']}:{c['line']}); in citation order the numbers "
+                                    f"run {shown}", "needs a person"))
+    return findings
+
+
+COVERED = re.compile(r"didn't find a database entry|Repeated entry|Duplicate entry key|couldn't open database file")
+
+
+def blg_findings(facts, found, bibs, missing):
+    """
+    BibTeX's or biber's .blg, as findings: each warning or error at the .bib entry or line it names (one finding per
+    place), or on the main file. What the references auditor already found is left out: a citation with no entry, a
+    key used twice, a missing file, and an empty field it named (missing: key -> the fields it said are missing).
+    """
+    blg = (facts or {}).get("bibtex") or {}
+    program, places = blg.get("program", "BibTeX"), {}
+    by_name = {Path(name).name.lower(): src for name, (src, _) in bibs.items()}
+    starts = {e["key"]: (src, e) for src, bib in bibs.values() for e in bib if not e.get("duplicate_key")}
+    for msg in blg.get("messages", []):
+        words = set(re.findall(r"[a-z]+", msg["text"].lower()))
+        if COVERED.search(msg["text"]) or (msg["key"] in missing and words & missing[msg["key"]]):
+            continue
+        src = by_name.get(Path(msg["file"]).name.lower()) if msg["file"] else (
+            next(iter(by_name.values())) if len(by_name) == 1 and msg["line"] else None)
+        if msg["key"] in starts and not msg["line"]:
+            src, e = starts[msg["key"]]
+            place = (src.name, e["pos"], e["end"])
+        elif src is not None and msg["line"] and msg["line"] <= len(src.starts):
+            place = (src.name, src.starts[msg["line"] - 1], src.starts[msg["line"] - 1])
+        else:
+            place = (None, 0, 0)
+        places.setdefault(place, []).append(msg)
+    sources = {**{src.name: src for src, _ in bibs.values()}, **found["sources"]}
+    findings = []
+    for (name, start, end), msgs in places.items():
+        src = sources.get(name) or found["sources"][found["files"][0]]
+        level = "error" if any(m["level"] == "error" for m in msgs) else "warning"
+        why = f"{program}: " + "; ".join(dict.fromkeys(m["text"] for m in msgs))
+        row = finding("references", f"{program} {level}", src, start, end, why[:400], "needs a person", words=6)
+        if name is None:
+            row["line"], row["evidence"] = None, msgs[0]["text"][:120]
+        findings.append(row)
+    return findings
+
+
+def audit_references(found, tree, ctx, facts=None):
     findings, entries, bibs = [], {}, {}
     for name in found["bibliographies"]:
         path = Path(tree) / name
@@ -202,7 +342,13 @@ def audit_references(found, tree, ctx):
                                         f"no entry '{key}' in {', '.join(bibs) or 'any .bib'}: the PDF prints [?]",
                                         "needs a person"))
     nocite_all = "*" in cited
-    titles, dois = {}, {}
+    biblatex = any(BIBLATEX.search(src.clean) for src in found["sources"].values())
+
+    def names(need):
+        """'journal' -> ['journal'], or in a biblatex paper ['journal', 'journaltitle']"""
+        return need.split("|") + [BIBLATEX_NAMES[n] for n in need.split("|") if biblatex and n in BIBLATEX_NAMES]
+
+    titles, dois, missing_for = {}, {}, {}
     for bib_name, (src, bib) in bibs.items():
         for e in bib:
             header = (e["pos"], e["end"])
@@ -223,14 +369,18 @@ def audit_references(found, tree, ctx):
             twin = twin or (titles.get(title) if len(title[0]) > 12 else None)
             if twin:
                 same = "DOI" if doi and dois.get(doi) else "title and year"
-                findings.append(finding("references", "the same work twice", src, *header,
-                                        f"'{e['key']}' has the same {same} as '{twin['key']}' (line "
-                                        f"{src.line(twin['pos'])}): one work entered under two keys", "likely"))
+                twin_src, twin = twin
+                row = finding("references", "the same work twice", src, *header,
+                              f"'{e['key']}' has the same {same} as '{twin['key']}' ({twin_src.name}:"
+                              f"{twin_src.line(twin['pos'])}): one work entered under two keys", "likely")
+                row["entries"] = [entry_text(twin_src, twin), entry_text(src, e)]  # for JUDGE, which sees both
+                findings.append(row)
             if doi:
-                dois.setdefault(doi, e)
-            titles.setdefault(title, e)
-            missing = [need for need in REQUIRED.get(e["type"], ())
-                       if not any(fields.get(f, "").strip() for f in need.split("|"))]
+                dois.setdefault(doi, (src, e))
+            titles.setdefault(title, (src, e))
+            missing = ["|".join(names(need)) for need in REQUIRED.get(e["type"], ())
+                       if not any(fields.get(f, "").strip() for f in names(need))]
+            missing_for[e["key"]] = {f for need in missing for f in need.split("|")}
             if missing:
                 findings.append(finding("references", "missing fields", src, *header,
                                         f"a {e['type']} needs {', '.join(m.replace('|', ' or ') for m in missing)}",
@@ -246,6 +396,8 @@ def audit_references(found, tree, ctx):
                 elif not DOI.match(DOI_LINK.sub("", raw)):
                     findings.append(finding("references", "malformed DOI", src, *header,
                                             f"'{raw}' is not a DOI (10.<number>/<suffix>)", "needs a person"))
+    findings += hand_numbers(found, bibs)
+    findings += blg_findings(facts, found, bibs, missing_for)
     return findings
 
 
@@ -621,6 +773,7 @@ def audit_text(found, tree):
                                     f"\"{command}{m.group(0)}\": the next word runs into the citation", "certain",
                                     f"{command} {m.group(0)}"))
     findings += variant_spellings(sources, plains, spell)
+    findings += acronyms(found, plains)
     return findings
 
 
@@ -649,9 +802,113 @@ def variant_spellings(sources, plains, spell):
     return findings
 
 
+DEFINED = re.compile(r"\(\s*([A-Z][A-Za-z0-9]{0,8}[A-Z])(s?)\s*\)")  # "(FDS)", "(ICEVs)", "(LiDAR)"
+
+
+def long_form(short, before):
+    """
+    The long form in "Fire Dynamics Simulator (FDS)", by Schwartz and Hearst's rule (2003): the short form's letters,
+    last to first, are found in order in the words before it, the first letter starting a word, within min(n + 5, 2n)
+    words for n letters. -> the long form, or None ("the peak of the fire (FP)" has none).
+    """
+    letters = [c.lower() for c in short if c.isalnum()]
+    text = " ".join(before.split()[-min(len(letters) + 5, 2 * len(letters)):])
+    i = len(text) - 1
+    for k in range(len(letters) - 1, -1, -1):
+        while i >= 0 and (text[i].lower() != letters[k] or (k == 0 and i > 0 and text[i - 1].isalnum())):
+            i -= 1
+        if i < 0:
+            return None
+        i -= 1
+    found = text[i + 1:]
+    return found if len(found) > len(short) and short.lower() not in found.lower().split() else None
+
+
+def reading_order(found):
+    """(file, position) -> a key that sorts as a reader meets the text: an \\input file's text comes where its
+    \\input stands in the file that inputs it."""
+    sources = found["sources"]
+    main = sources[found["files"][0]]
+    tree = main.path.resolve().parents[len(Path(main.name).parts) - 1]
+    prefix = {main.name: ()}
+    for name in found["files"]:  # a file is listed after the file that inputs it
+        for m in re.finditer(rf"\\(?:{'|'.join(INPUTS)})\s*\{{([^}}]+)\}}", sources[name].clean):
+            target = main.path.resolve().parent / m.group(1).strip()
+            target = target if target.suffix else target.with_suffix(".tex")
+            child = target.resolve().relative_to(tree).as_posix() if target.resolve().is_relative_to(tree) else None
+            if child in sources and child not in prefix and name in prefix:
+                prefix[child] = prefix[name] + (m.start(),)
+    return lambda name, pos: prefix.get(name, (float("inf"),)) + (pos,)
+
+
+def acronyms(found, plains):
+    """
+    An acronym used before the sentence that defines it ("FDS ... Fire Dynamics Simulator (FDS)"), or defined twice
+    (once in the abstract and once in the body is the custom, and allowed). Only acronyms the paper defines are
+    checked, in its prose: headings, captions and the preamble are read on their own (a table of contents, a list of
+    figures, a title), so a use or a definition there doesn't count. An acronym right after a command is that
+    command's argument (\\ac{FDS}: the acronym package writes the definition itself).
+    """
+    sources, order = found["sources"], reading_order(found)
+    skip = {name: [(h["pos"], h["end"]) for h in found["headings"] + found["captions"] if h["file"] == name]
+            for name in sources}
+    main = sources[found["files"][0]]
+    begin = main.clean.find("\\begin{document}")
+    skip[main.name].append((0, max(begin, 0)))
+    abstract = {name: [(m.start(), m.end()) for m in re.finditer(r"\\begin\{abstract\}.*?\\end\{abstract\}",
+                                                                   src.clean, re.S)] for name, src in sources.items()}
+
+    def inside(spans, pos):
+        return any(a <= pos < b for a, b in spans)
+
+    defined = {}  # acronym -> [(reading order, file, start, end, long form)]
+    for name, (plain, where) in plains.items():
+        for m in DEFINED.finditer(plain):
+            start = where[m.start()]
+            if inside(skip[name], start):
+                continue
+            cut = max(plain.rfind(c, 0, m.start()) for c in ".;:!?()" + BREAK) + 1
+            long_ = long_form(m.group(1), plain[cut:m.start()])
+            if long_:
+                defined.setdefault(m.group(1), []).append((order(name, start), name, start, where[m.end() - 1] + 1,
+                                                           long_))
+    findings = []
+    for short, places in defined.items():
+        places.sort()
+        at = {(name, start) for _, name, start, _, _ in places}
+        first, uses = places[0], []
+        for name, (plain, where) in plains.items():
+            for m in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(short)}s?(?![A-Za-z0-9])", plain):
+                start = where[m.start()]
+                if (name, where[m.start() - 1] if m.start() else -1) in at or inside(skip[name], start) \
+                        or plain[m.start() - 1:m.start()] == BREAK:
+                    continue  # the definition's own "(FDS)", a heading, \ac{FDS}
+                uses.append((order(name, start), name, start, where[m.end() - 1] + 1))
+        early = [u for u in uses if u[0] < first[0]]
+        if early:
+            _, name, start, end = min(early)
+            findings.append(finding("text", "acronym used before its definition", sources[name], start, end,
+                                    f"\"{short}\" is used here, but defined only later: \"{first[4]} ({short})\" at "
+                                    f"{first[1]}:{sources[first[1]].line(first[2])}", "likely"))
+        in_abstract = [p for p in places if inside(abstract[p[1]], p[2])]
+        in_body = [p for p in places if p not in in_abstract]
+        for again in in_abstract[1:] + in_body[1:]:
+            before = (in_abstract if again in in_abstract else in_body)[0]
+            words = [re.sub(r"s$", "", " ".join(re.split(r"[\s-]+", p[4].lower()))) for p in (before, again)]
+            findings.append(finding("text", "acronym defined twice", sources[again[1]], again[2], again[3],
+                                    f"\"{short}\" is defined again here; it was defined at {before[1]}:"
+                                    f"{sources[before[1]].line(before[2])} as \"{before[4]}\""
+                                    + (f", and here as \"{again[4]}\"" if words[0] != words[1] else ""), "likely"))
+    return findings
+
+
 # ---- JUDGE: the LLM looks at each likely finding once -------------------------------------------------------------
 JUDGE_SYSTEM = ("You check one suspected error in a scientific paper written in LaTeX. Reply with exactly two lines. "
                 "Line 1: yes if it is an error, or no if it is not. Line 2: the passage as it should read.")
+JUDGE_SAME_WORK = ("You compare two BibTeX entries from the bibliography of one paper. Reply with exactly two lines. "
+                   "Line 1: yes if both entries are the same work (one work entered twice), or no if they are two "
+                   "different works (another edition, volume, part or year counts as different). Line 2: why, in a "
+                   "few words.")
 
 
 def squash(text):
@@ -663,22 +920,29 @@ def judge(findings, ctx):
     JUDGE: one short prompt per 'likely' finding that has a fix: the passage, the suspicion, the proposed correction.
     Plain Python reads the reply. A 'yes' makes the finding certain only if the LLM's corrected passage is the
     proposed one; a 'no' rejects it (it stays in the ledger, marked rejected). The LLM can't add a finding or a fix.
+    "The same work twice" has no fix (merging two entries changes every \\cite of one): the LLM is shown both entries
+    as written, and its yes confirms the finding (still likely: a person merges them), its no rejects it.
     """
     agent = getattr(ctx, "agent", None)
-    asked = [f for f in findings if f["confidence"] == "likely" and f["fix"]]
+    asked = [f for f in findings if f["confidence"] == "likely" and (f["fix"] or f.get("entries"))]
     if not asked or agent is None:
         return {"asked": 0}
     t, counts = ctx.tracer, Counter()
     t.banner(f"JUDGE: the LLM looks at {len(asked)} likely finding(s), one short prompt each")
     for k, f in enumerate(asked, 1):
-        before = f["evidence"]
-        old, new = " ".join(f["fix"]["old"].split()), " ".join(f["fix"]["new"].split())
-        after = before.replace(old, new, 1) if old in before else new
-        question = (f"Passage: {before}\nSuspected error: {f['why']}\nProposed correction: {after}\n"
-                    "Is it an error?")
+        if f["fix"]:
+            system, before = JUDGE_SYSTEM, f["evidence"]
+            old, new = " ".join(f["fix"]["old"].split()), " ".join(f["fix"]["new"].split())
+            after = before.replace(old, new, 1) if old in before else new
+            question = (f"Passage: {before}\nSuspected error: {f['why']}\nProposed correction: {after}\n"
+                        "Is it an error?")
+        else:
+            system = JUDGE_SAME_WORK
+            question = (f"Entry 1:\n{f['entries'][0]}\n\nEntry 2:\n{f['entries'][1]}\n\nSuspected error: {f['why']}\n"
+                        "Are they the same work?")
         start = time.perf_counter()
         with t.nested(f"JUDGE {k}/{len(asked)}"):
-            reply = agent.llm.generate([{"role": "system", "content": JUDGE_SYSTEM},
+            reply = agent.llm.generate([{"role": "system", "content": system},
                                         {"role": "user", "content": question}], None, 120, 0.0)
         with t.stage("JUDGE", "python", "plain Python reads the LLM's yes/no (no ML)", "the LLM's reply",
                      "the finding's confidence") as ev:
@@ -686,7 +950,14 @@ def judge(findings, ctx):
             answer = re.match(r"\W*(yes|no)\b", lines[0], re.I) if lines else None
             answer = answer.group(1).lower() if answer else "unclear"
             wrote = re.sub(r"^(?:line 2:|corrected:|correction:)\s*", "", lines[1], flags=re.I) if len(lines) > 1 else ""
-            if answer == "yes" and squash(wrote.strip("\"'`")) == squash(after):
+            if not f["fix"]:  # the same work twice
+                if answer == "yes":
+                    verdict = "confirmed: the LLM says both entries are one work (a person merges them)"
+                elif answer == "no":
+                    f["status"], verdict = "rejected", "rejected: the LLM says they are two different works"
+                else:
+                    verdict = "still likely: no clear yes or no"
+            elif answer == "yes" and squash(wrote.strip("\"'`")) == squash(after):
                 f["confidence"], verdict = "certain", "confirmed: yes, and the same correction"
             elif answer == "no":
                 f["status"], verdict = "rejected", "rejected: the LLM says it is not an error"
@@ -726,8 +997,42 @@ def counts_of(findings):
             f"person" + (f"; {rejected} rejected by JUDGE" if rejected else ""))
 
 
+def project_name(root, ctx):
+    """
+    How a project is known from one request to the next: its path in workspace/, or, for a project the user named
+    outside workspace/, the original that files.import_named_files copied into this run (ctx.facts["imported_from"]).
+    The copy's path changes with every run folder; the original's doesn't, so "the last audit of ..\\papers\\x" is found.
+    """
+    root = Path(root).resolve()
+    for copy, original in ctx.facts.get("imported_from", {}).items():
+        copy = Path(copy).resolve()
+        if root == copy or root.is_relative_to(copy):  # a .zip's project may sit a folder down: x.zip/x
+            return (Path(original) / root.relative_to(copy)).as_posix()
+    return rel(root)
+
+
 def ledger_slug(project):
-    return re.sub(r"[^A-Za-z0-9]+", "_", str(project)).strip("_") or "project"
+    """'workspace/latex_demo' -> 'workspace_latex_demo', 'C:/papers/x' -> 'c_papers_x': the file name in
+    outputs/ledgers/ (lower case: Windows writes one folder's name in either case). A long path keeps its end and a
+    hash of the whole, so the file's path stays inside Windows' 260 characters and two projects stay apart."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", str(project)).strip("_").lower() or "project"
+    if len(slug) > 80:
+        slug = slug[-70:].lstrip("_") + "_" + hashlib.sha1(slug.encode()).hexdigest()[:8]
+    return slug
+
+
+def code(text):
+    """text as a Markdown code span on one line: fenced by more backticks than any run inside it, as CommonMark
+    reads it, so LaTeX's ``quotes'' survive."""
+    text = " ".join(str(text).split())
+    fence = "`" * (max((len(r) for r in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def prose(text):
+    """Text outside a code span, on one line: a backtick in it (LaTeX's ``quote'') escaped, so it opens no span."""
+    return " ".join(str(text).split()).replace("`", "\\`")
 
 
 def write_ledger(ledger, run_dir):
@@ -754,11 +1059,11 @@ def write_ledger(ledger, run_dir):
             continue
         lines += ["", f"## {cat}", ""]
         for f in rows:
-            fix = f" Fix: `{f['fix']['old']}` -> `{f['fix']['new']}`." if f["fix"] else ""
+            fix = f" Fix: {code(f['fix']['old'])} -> {code(f['fix']['new'])}." if f["fix"] else ""
             judged = f" JUDGE: {f['judge']['verdict']}." if f["judge"] else ""
             status = "" if f["status"] == "found" else f" **{f['status']}**"
             lines.append(f"- **{f['id']}** `{f['file']}:{f['line']}` ({f['confidence']}){status} {f['check']}: "
-                         f"\"{f['evidence']}\". {f['why']}.{fix}{judged}".replace("..", "."))
+                         f"\"{prose(f['evidence'])}\". {prose(f['why']).rstrip('.')}.{fix}{judged}")
     paths["report"].write_text("\n".join(lines) + "\n", encoding="utf-8")
     with open(paths["csv"], "w", newline="", encoding="utf-8") as fh:
         out = csv.writer(fh)
@@ -784,8 +1089,8 @@ def audit(root, main, ctx, checks=CHECKS, use_judge=None, name="original", save=
         ev.summary = scan_summary(found)
     findings = audit_build(facts, found)
     for check, (stage, component, auditor) in {
-            "references": ("AUDIT: REFERENCES", "bibtexparser + the scan (no ML)",
-                           lambda: audit_references(found, tree, ctx)),
+            "references": ("AUDIT: REFERENCES", "bibtexparser + the scan + the .blg (no ML)",
+                           lambda: audit_references(found, tree, ctx, facts)),
             "crossrefs": ("AUDIT: CROSS-REFERENCES", "the .aux + the scan (no ML)",
                           lambda: audit_crossrefs(found, aux, facts)),
             "text": ("AUDIT: TEXT", "pylatexenc + pyspellchecker + regular expressions (no ML)",
@@ -801,7 +1106,7 @@ def audit(root, main, ctx, checks=CHECKS, use_judge=None, name="original", save=
     number_findings(findings, found["files"] + found["bibliographies"])
     use_judge = save and (LATEX["judge"] if use_judge is None else use_judge)
     judged = judge(findings, ctx) if use_judge else {"asked": 0}
-    ledger = {"project": rel(root), "root": str(root), "main": main.relative_to(root).as_posix(),
+    ledger = {"project": project_name(root, ctx), "root": str(root), "main": main.relative_to(root).as_posix(),
               "audited": datetime.now().isoformat(timespec="minutes"), "run_dir": str(ctx.run_dir),
               "copy": str(tree), "engine": facts["engine"], "pages": facts["pages"], "build": build_summary(facts),
               "pdf": facts["pdf"], "checks": list(checks), "judge": judged, "findings": findings}
@@ -817,10 +1122,11 @@ def audit(root, main, ctx, checks=CHECKS, use_judge=None, name="original", save=
 
 
 def last_ledger(root, ctx):
-    """The project's ledger: this request's, else the latest saved one (outputs/ledgers/<project>.json), or None."""
+    """The project's ledger: this request's, else the latest saved one (outputs/ledgers/<project>.json, by the
+    original's path for a project imported from outside workspace/), or None."""
     if str(root) in ctx.facts.get("latex_ledgers", {}):
         return ctx.facts["latex_ledgers"][str(root)]
-    path = LEDGERS_DIR / f"{ledger_slug(rel(root))}.json"
+    path = LEDGERS_DIR / f"{ledger_slug(project_name(root, ctx))}.json"
     if path.is_file():
         ledger = json.loads(path.read_text(encoding="utf-8"))
         ctx.facts.setdefault("latex_ledgers", {})[str(root)] = ledger
