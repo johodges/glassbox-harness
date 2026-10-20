@@ -38,7 +38,13 @@ matplotlib                  # workspace/make_examples.py draws the test plot wit
 pytest                      # run_tests (9.1.1 tested)
 ruff                        # check_code: the linter (0.17.1 tested)
 mypy                        # check_code with HarnessConfig.check_types (2.4.0 tested)
-# The LaTeX tool also needs pdflatex on the PATH (e.g. TeX Live or MiKTeX); without it, it reports an error.
+
+# --- LaTeX projects (harness/tools/latex_*.py): audit, fix, latexdiff --------------------------------------------
+pylatexenc                  # LaTeX -> plain text, each character mapped back to its file and line (2.11 tested)
+bibtexparser<2              # reads the .bib (1.4.4 tested; 2.x is a different API)
+pyspellchecker              # the spelling check, with the project's own word list (0.9.1 tested)
+# They also need TeX Live on the PATH: latexmk, pdflatex/lualatex, bibtex/biber and latexdiff (Perl comes with TeX
+# Live on Windows). update_latex needs only pdflatex (TeX Live or MiKTeX); without it, the tools report an error.
 # export_pdf needs PowerPoint (Windows) or LibreOffice (soffice); convert_presentation works without either.
 
 # --- Optional: lets Spyder use this venv as its Python interpreter ---------------

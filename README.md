@@ -138,8 +138,10 @@ checks this before downloading anything.
 
 Optional: `powershell -ExecutionPolicy Bypass -File trellis_local\setup.ps1` installs a local 3D server in WSL
 (~23 GB, see [TRELLIS](#trellis-3d-remote-or-local)); without it, add `--trellis remote` to 3D requests.
-For the LaTeX tool install [MiKTeX](https://miktex.org/) or [TeX Live](https://tug.org/texlive/) (`pdflatex`);
-PowerPoint and Excel, if installed, are used to measure slides, export PDFs and recalculate workbooks.
+For the LaTeX tools install [TeX Live](https://tug.org/texlive/) (the full scheme): the paper audit needs
+`latexmk`, `bibtex`/`biber` and `latexdiff`, and TeX Live brings the Perl they run on. `update_latex` alone works with
+[MiKTeX](https://miktex.org/) too. PowerPoint and Excel, if installed, are used to measure slides, export PDFs and
+recalculate workbooks.
 
 ### Linux (bash, NVIDIA GPU)
 
@@ -157,7 +159,7 @@ System packages some tools use (Debian/Ubuntu names):
 
 ```bash
 sudo apt install espeak-ng                    # recommended by Kokoro (speech) for words it can't pronounce
-sudo apt install texlive-latex-recommended    # pdflatex for the LaTeX tool
+sudo apt install texlive-latex-extra texlive-extra-utils latexmk biber   # the LaTeX tools (latexdiff is in extra-utils)
 sudo apt install libreoffice-impress          # export_pdf (PowerPoint is Windows-only)
 ```
 
@@ -174,7 +176,8 @@ bash setup.sh                                 # makes .venv, installs PyTorch (C
 The harness runs on the CPU on a Mac (it uses CUDA or nothing), so start with the text, document, speech and
 image-question tools: the download line above skips the video, image, music and code models (~57 GB). Add
 `image` or `music` to it to make pictures or tunes (slow on a CPU). The 4-bit code model needs an NVIDIA GPU. For the extra tools:
-`brew install espeak-ng`, `brew install --cask basictex` (pdflatex) and `brew install --cask libreoffice` (PDF export).
+`brew install espeak-ng`, `brew install --cask mactex-no-gui` (the LaTeX tools) and `brew install --cask libreoffice`
+(PDF export).
 
 ### Then
 
@@ -277,6 +280,8 @@ Read in this order:
 | [compare_effort.py](compare_effort.py) | word problems and tool requests at four effort levels: what is right, and what it cost |
 | [harness/tools/coding.py](harness/tools/coding.py), [workspace/code_demo/](workspace/code_demo/) | code tools: pytest, ruff, a code search, whole-function edits, a review checked line by line; a small project with seeded bugs |
 | [compare_code.py](compare_code.py) | the same code requests with Llama 3.2 3B and Qwen2.5-Coder 7B (4-bit): tests afterwards, hidden checks, findings, cost |
+| [harness/tools/latex_project.py](harness/tools/latex_project.py), [latex_audit.py](harness/tools/latex_audit.py), [latex_fix.py](harness/tools/latex_fix.py), [latexdiff.py](harness/tools/latexdiff.py) | a LaTeX paper: build and read the log, scan the source, three auditors and a ledger, verified fixes, a latexdiff for review ([below](#auditing-a-latex-paper-audit-fix-latexdiff)) |
+| [compare_audit.py](compare_audit.py), [tests/](tests/) | the audit scored against the demo paper's answer key; the harness's unit tests (`python -m pytest`) |
 | [compare_quantization.py](compare_quantization.py) | the planner's weights in 16, 8 and 4 bits: memory, load time, speed, word problems, the eval suite, valid tool-call JSON |
 
 ## Experiments for a class
@@ -1497,6 +1502,135 @@ Not done here: a switch to plan with a frontier model through the Anthropic API,
 send the code and prompts off this machine, so it would be off by default). Adding one means a planner class with
 `generate()` that turns the API's tool-use blocks back into text for PARSE.
 
+## Auditing a LaTeX paper: audit, fix, latexdiff
+
+A copy-editor's job on a technical paper: check the references, the cross-references and the text, fix what can be
+fixed, and give the reviewers a marked-up PDF of every change. Six tools do it on a LaTeX **project** (a folder: a
+main `.tex`, the files it `\input`s, a `.bib`, figures, a `.sty`). Almost none of it is AI. TeX Live's programs
+build the paper and mark up the changes. Plain Python reads what they write, scans the source, and runs three
+auditors. The LLM picks the tool and the path, and, as **JUDGE**, answers yes or no to each finding a checker only
+suspects.
+
+```powershell
+.\.venv\Scripts\python.exe run_agent.py "Audit workspace/latex_demo, fix what you can and make a latexdiff for review"
+.\.venv\Scripts\python.exe run_agent.py "Fix the errors in the last audit of workspace/latex_demo."
+.\.venv\Scripts\python.exe run_agent.py "In workspace/latex_demo, change \"a fast fire\" to \"a fast t-squared fire\" and give me a latexdiff."
+.\.venv\Scripts\python.exe run_agent.py "Audit ..\papers\fire_note.zip"     # a folder or .zip outside workspace/ is copied in
+.\.venv\Scripts\python.exe compare_audit.py                                   # the audit scored against its answer key
+.\.venv\Scripts\python.exe -m pytest                                          # the unit tests (tests/, ~3 min with TeX Live)
+```
+
+The demo paper, [workspace/latex_demo/](workspace/latex_demo/), is a three-page note on design fires and sprinkler
+activation with 12 planted errors. They are listed only in [latex_demo_answers.json](latex_demo_answers.json),
+outside `workspace/`, so no tool can show them to the LLM. The planted errors: a doubled "in in" across a line
+break; "struture"; "Castellamare" once and "Castellammare" twice; "as Figure 3 shows" with two figures; "Section
+4.0" with three sections; a `\ref` to a label that doesn't exist; a `\cite` with no `.bib` entry; a `.bib` entry
+never cited; one report entered under two keys; `\section[Results]{Measured Peak Heat Release Rates}`, whose table of
+contents says something else; "January 8. 2025"; and `\cite{mell2009}can`.
+
+### The tools
+
+| tool | the LLM writes | what does the work | what the LLM reads back |
+|------|----------------|--------------------|-------------------------|
+| `build_latex` | a project | `latexmk` (pdfLaTeX, or LuaLaTeX for `fontspec`; BibTeX) on a copy, with a time limit | pages; errors, undefined references and citations, overfull boxes, each with file:line; BibTeX's warnings |
+| `scan_latex` | a project | a balanced-brace scanner over the `\input` tree, and the build's `.aux` (what number each `\label` printed as) | headings with their numbers, the sources cited, numbers typed by hand ("Figure 3"); the full map in `scan.json` |
+| `audit_latex` | a project | build + scan + three auditors + JUDGE (below) | counts, and one line per finding: `A007 crossrefs sections/results.tex:16 "as Figure 3 shows" -> Figure~\ref{fig:hrr} (certain)` |
+| `fix_latex` | a project, `which` (certain, all, or ids) | each fix in the ledger as an exact-match edit on a corrected copy; a rebuild and the same audit again | verified, failed (and undone), skipped; what still needs a person; new findings |
+| `edit_tex` | a project, old and new text | an exact-match edit on the corrected copy (across line breaks), a rebuild; CHECK ARGS puts back the user's quoted words | the diff, the build |
+| `make_latexdiff` | a project | `latexdiff` per changed file, the main file's diff as the master, then `latexmk` | the diff PDF; insertions and deletions per file; changes the diff can't show |
+
+### The three auditors
+
+| auditor | checks | how |
+|---------|--------|-----|
+| references | a `\cite` with no entry; an entry never cited; one work under two keys (the same DOI, or the same title and year); a key used twice; missing fields for the entry type; a DOI written as a link | `bibtexparser` + the scan |
+| cross-references | a `\ref` to no `\label`; a label defined twice; a number typed by hand that names no figure, table or section ("Figure 3", "Section 4.0"), or names the wrong one; a short title in `\section[..]` or `\caption[..]` that says something other than the long one; counters set by hand | the `.aux` numbers + the scan. For "Figure 3" with two figures, the words of the sentence are compared with each caption's: one clear match makes the fix `Figure~\ref{fig:hrr}` certain |
+| text | doubled words (across line breaks and `\emph{}`); misspellings; a name spelled two ways; `..`, `,,`, a space before a comma; dates ("January 8. 2025"); straight quotes; a citation run into the next word | `pylatexenc` parses the LaTeX; the words between the commands become plain text in which every character remembers its place in the file, so every finding has a file and a line. `pyspellchecker`, with the `.bib`, the macro names and a `.wordlist` as the project's words |
+
+Every finding goes into a **ledger**: `ledger.json` (for the tools), `audit_report.md` (for a person) and
+`ledger.csv` in the run folder. The latest one of each project is also saved as `outputs/ledgers/<project>.json`.
+That is how "fix the errors in the last audit" works in a later request: it is the harness's first state that lasts
+from one request to the next. Each finding has a confidence:
+- **certain**: the fix follows from facts. "in in" becomes "in"; one common word is one letter from "struture";
+  exactly one caption matches the sentence.
+- **likely**: a checker suspects it. JUDGE may confirm or reject it, and `fix_latex` asks a person (APPROVAL) before
+  applying it.
+- **needs a person**: no fix can be derived. Which source is "nist2026"? Which section did "Section 4.0" mean?
+
+A fix is an exact-match edit: its old text must occur exactly once in its paragraph (it grows a word at a time on
+each side until it does). Then `fix_latex` builds the corrected copy and audits it again. A fix is **verified** if
+its finding is gone and nothing new appeared on its line; otherwise it **failed** and is undone. The original
+project never changes. The run folder gets `latex_demo_original.pdf`, `latex_demo_corrected.pdf` and
+`latex_demo_latexdiff.pdf`.
+
+**latexdiff:** each changed `.tex` file is diffed on its own (`--flatten` fails on big projects), with
+`MAXCHANGESLETTER=0`. Without it, latexdiff underlines one letter inside "Castellam**m**are", which a reviewer
+misses; with it, the whole word is struck through and the new one underlined. If a marked-up file won't compile,
+it is diffed again without maths markup, then the whole diff in another style (CFONT), and as a last resort the
+file goes in unmarked and is named. The answer also lists what a marked-up PDF can't show: a `.bib` change, the
+preamble, a spacing fix, a table-of-contents title.
+
+### Measured: `compare_audit.py`
+
+`compare_audit.py` runs the audit without and with JUDGE, then `fix_latex` on the certain findings, and scores the
+results against the answer key:
+
+| | plain Python | with JUDGE (Llama 3.2 3B) |
+|---|---|---|
+| planted errors found | 12 of 12 | 12 of 12 |
+| findings that match no planted error | 0 | 0 |
+| at the key's confidence | 12 of 12 | 11 of 12 |
+| certain fixes applied and verified | 5 of 5 | 6 of 6 |
+| time | ~20 s, nearly all of it `latexmk` | the same + ~1 s per JUDGE prompt |
+
+JUDGE was asked twice. It confirmed "Castellamare" → "Castellammare", which then became certain and was fixed. It
+said no to dropping `[Results]` from `\section[Results]{Measured Peak Heat Release Rates}`, and wrote the line back
+unchanged: a short table-of-contents title is a legitimate LaTeX feature, so this is a judgement call, and the
+finding stays in the ledger marked rejected. `fix_latex(which="A006")` applies it anyway, after a person says yes.
+Fixing "Castellammare" (one letter longer) pushed that line 1.5 pt into the margin: the re-audit reports the new
+overfull box, and the fix stays verified.
+
+### What went wrong on a real paper, and the fixes
+
+A demo written to match the checks scores well by construction. The test that matters is a real paper, so the audit
+was also run on a 15-page planning proposal (`DesignFires_Proposal.tex`, on the presenter's machine). First result:
+**43 findings, and one real error** ("publications.."). The rest were the spell checker's: "deliverables",
+"railcar", "workflows", "wildland", "webinar", "parameterized". **Thirteen of them were marked certain**, with fixes
+such as "railcar" → "railcard", which `fix_latex` would have applied. A dictionary misses many real words, so the
+rules changed:
+- **A misspelling is certain only for a word used once, whose one suggestion is a common word** ("struture" →
+  "structure", "occured" → "occurred").
+- **A word built from words the dictionary has is a word:** an inflection ("deliverables", "chemistries"), a prefix
+  ("repurposed", "submodels"), or two common words joined ("rail"+"car", "work"+"flow", "wild"+"land"; not
+  "strut"+"ure").
+- **A spelling used twice or more is taken as intended.** The rest are listed in one finding per file ("pyfdstools
+  (2x), thermophoretic (1x), webinar (3x): add them to .wordlist").
+
+After the change: **2 findings**, the real error and that list. The demo still scores 12 of 12. The price is recall:
+"transfered" or "refered" now pass as inflections of real words.
+
+Three more bugs only a real paper showed:
+- **Brackets in the log.** TeX's log marks each file it opens with `(./file.tex` and closes it with `)`. The parser
+  also took the `)` of "(1.2pt too wide)" as a file closing, so after a few overfull boxes it no longer knew which
+  file it was in. Now every `(` counts, so the brackets balance.
+- **Overfull boxes in a class file.** A box inside `texMemo.cls` has no `.tex` file, and the build summary crashed on
+  it.
+- **The wrong paper.** A 3.7 GB folder was refused by the import's size cap (500 MB), and `resolve()` then found
+  another `main.tex` in `workspace/` and audited the demo instead. A path the LLM writes with a folder must now end in
+  that folder.
+
+New stages in the trace: PROJECT COPY, BUILD, SCAN, AUDIT: REFERENCES, AUDIT: CROSS-REFERENCES, AUDIT: TEXT,
+JUDGE (the LLM, then plain Python reading its yes or no), LEDGER, SELECT FIXES, APPROVAL, APPLY FIXES, VERIFY,
+UNDO, CHANGED FILES, LATEXDIFF, BUILD DIFF, UNMARKED. Only JUDGE involves a model.
+
+**Setup:** TeX Live (the full scheme: `latexmk`, `bibtex`/`biber`, `latexdiff`, and on Windows the Perl they need);
+`pylatexenc`, `bibtexparser<2` and `pyspellchecker` come with `requirements.txt`. `setup.ps1` and `setup.sh` say
+which TeX programs are missing.
+
+**Not done yet:** biber's `.blg` beyond its warnings; acronyms used before they are defined; a reference list numbered
+by hand against the citation order; JUDGE for the "same work twice" findings; a ledger for an imported project that
+outlives its run folder (it is keyed by the copy's path).
+
 ## Quantization: fewer bits per weight
 
 Every weight in a model is one number, and Llama 3.2 3B was trained with 16-bit ones (bf16): 3.2 billion of them,
@@ -1573,7 +1707,7 @@ lose less than a 3B at the same number of bits; here only the 3B could be measur
 
 ## Measuring instead of guessing: `evaluate.py`
 
-`python evaluate.py` runs thirty fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, five for the code tools, one of them a fix that the PLANNER hands to the code model; on 2026-10-16 it scored 30/30 in 17 minutes, with the date pinned) and checks which tools actually ran (a pass means exactly
+`python evaluate.py` runs thirty-four fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, five for the code tools, one of them a fix that the PLANNER hands to the code model, and four for a LaTeX paper: audit, fix, latexdiff, an edit; on 2026-10-16 the first thirty scored 30/30 in 17 minutes, with the date pinned, and on 2026-10-20 all thirty-four scored 34/34) and checks which tools actually ran (a pass means exactly
 the expected tools ran, the results name the right files where a test says which, and the final
 answer is text). `python evaluate.py --real` adds slow tests on real files outside the project. `python evaluate.py --only database` runs only the tests whose request contains those words (here the two database tests, in about a minute). Because decoding is greedy, the same harness
 gives the same result every time, so any change in score comes from your change, with one catch found on 2026-10-16:

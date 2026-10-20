@@ -44,6 +44,11 @@ rm torch-constraint.txt
 
 "$PY" -c "import torch; print('CUDA available:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '(the harness will run on the CPU)')"
 
+# The LaTeX tools run TeX Live's programs; nothing else needs them
+MISSING=""
+for tool in latexmk pdflatex bibtex latexdiff; do command -v "$tool" > /dev/null || MISSING="$MISSING $tool"; done
+if [ -n "$MISSING" ]; then echo; echo "Not on the PATH:$MISSING. The LaTeX tools need TeX Live (see the README)."; fi
+
 echo
 echo "Next: download the models (~65 GB, once):   .venv/bin/python download_models.py"
 echo "Then try:   .venv/bin/python run_agent.py \"Paint a watercolor fox and narrate a one-line story about it\""

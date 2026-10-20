@@ -85,6 +85,13 @@ class IntentRouter:
         "write_code": ["writing a new function or test in code"],
         "create_file": ["creating a new file"],
         "review_code": ["a review of code"],
+        # LaTeX projects (tools/latex_*.py): all rule-only, see LATEX_RULES
+        "build_latex": ["compiling a LaTeX project"],
+        "scan_latex": ["the structure of a LaTeX paper"],
+        "audit_latex": ["proofreading a paper"],
+        "fix_latex": ["fixing the errors an audit found"],
+        "edit_tex": ["changing words in a LaTeX paper"],
+        "make_latexdiff": ["a latexdiff for review"],
     }
     TEMPLATE = "This request asks for {}."
 
@@ -93,7 +100,8 @@ class IntentRouter:
     DOCUMENT_TOOLS = {"read_file", "search_references", "update_powerpoint", "update_word_document",
                       "update_latex", "edit_code", "run_script", "convert_presentation", "export_pdf", "digitize_plot",
                       "fire_calculation", "query_database", "ask_subagent", "update_excel",
-                      "run_tests", "check_code", "search_code", "write_code", "create_file", "review_code"}
+                      "run_tests", "check_code", "search_code", "write_code", "create_file", "review_code",
+                      "build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff"}
     MENTIONS_FILES = re.compile(r"\.(pptx|potx|docx|xlsx|tex|py|pdf|md|txt|png|jpe?g)\b|\b(files?|documents?|slides?|deck|presentation|"
                                 r"powerpoint|word document|report|references?|scripts?|code|latex|workspace|templates?|"
                                 r"pdf)\b", re.I)
@@ -132,11 +140,29 @@ class IntentRouter:
                    ["write_code", "read_file", "run_tests"]),
                   (re.compile(r"\b(?:create|new)\s+(?:a |an )?(?:new )?(?:file|module|test file)\b", re.I),
                    ["create_file"])]
+    # LaTeX projects. They apply when the request is about a paper: a .tex, "LaTeX", a paper or manuscript, a .zip,
+    # or a folder that holds a LaTeX project ("Audit workspace/latex_demo"). Then ONLY these tools are offered:
+    # "check the references" must not bring search_references, "for review" review_code, "a t-squared fire" the
+    # fire calculator, or ".tex" update_latex, which rewrites one section of one file.
+    LATEX_CONTEXT = re.compile(r"\.tex\b|\blatex\b|\.zip\b|\b(?:paper|manuscript|thesis)s?\b", re.I)
+    LATEX_RULES = [
+        # not "the last audit": fixing what an earlier audit found doesn't need a new one
+        (re.compile(r"(?<!last )(?<!latest )(?<!previous )(?<!earlier )\b(?:audit|proofread|copy-?edit)\w*|"
+                    r"\bcheck\b[^.?!]{0,30}\b(?:references|citations|spelling|cross-?references|figure numbers)\b",
+                    re.I), ["audit_latex"]),
+        (re.compile(r"\b(?:fix|correct|repair)\w*\b[^.?!]{0,60}\b(?:audit|errors?|findings?|issues?|mistakes?|"
+                    r"typos?|problems?|what you can)\b|\bapply (?:the )?(?:fixes|corrections)\b", re.I), ["fix_latex"]),
+        (re.compile(r"\blatexdiff\b|\btrack(?:ed)?[- ]changes\b|\bdiff\b|\bredline|\bmarked[- ]up\b|"
+                    r"\bfor (?:peer )?review\b", re.I), ["make_latexdiff"]),
+        (re.compile(r"\b(?:compile|build)\w*\b|\bdoes it build\b", re.I), ["build_latex"]),
+        (re.compile(r"\b(?:change|replace)\s+[\"\u201c'][^\"\u201d']+[\"\u201d']\s+(?:to|with|by|into)\b", re.I),
+         ["edit_tex"])]
+    LATEX_TOOLS = {"build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff"}
     # Tools the classifier never scores: only a rule can offer them. It offered search_references for "What are
     # the values in this chart?", and edit_code for a .tex request, which Llama then used to overwrite \section{Results}.
     RULE_ONLY = {"search_references", "edit_code", "run_script", "digitize_plot", "fire_calculation", "query_database",
                  "ask_subagent", "update_excel", "run_tests", "check_code", "search_code", "write_code", "create_file",
-                 "review_code"}
+                 "review_code"} | LATEX_TOOLS
 
     def __init__(self, tracer, device="cpu", threshold=0.5):
         self.tracer, self.threshold = tracer, threshold
@@ -160,8 +186,16 @@ class IntentRouter:
                 ruled.pop("run_script", None)                             # the linter; run_script is for workspace/scripts
             if "review_code" in ruled:  # a review reports; it changes nothing (".py" brought edit_code)
                 ruled.pop("edit_code", None)
+            latex = latex_rules(text, available)
+            if latex:  # a request about a LaTeX paper gets the LaTeX project tools, and nothing else
+                ruled = latex
             documents = [name for name in available if name in self.DOCUMENT_TOOLS]
-            if ruled:  # the request names a file: it is a document request, so media tools are not scored
+            if latex:
+                candidates = []
+                self.tracer.say("rule: " + ", ".join(f"'{word}' -> {tool}" for tool, word in ruled.items())
+                                + "  (a LaTeX paper: only the LaTeX project tools; the classifier scores nothing)",
+                                kind="python")
+            elif ruled:  # the request names a file: it is a document request, so media tools are not scored
                 candidates = documents
                 self.tracer.say("rule: " + ", ".join(f"'{word}' -> {tool}" for tool, word in ruled.items())
                                 + "  (a named file type always brings its tool; media tools are not scored)",
@@ -203,6 +237,20 @@ class IntentRouter:
             ev.details = {"pieces": pieces, "scores": scores, "threshold": self.threshold, "chosen": chosen,
                           "rules": ruled}
         return chosen, scores
+
+
+def latex_rules(text, available):
+    """The LaTeX project tools the request asks for -> {tool: the words that matched}. A named project folder with
+    no other rule brings scan_latex, which answers questions about the paper's structure."""
+    from .tools.latex_project import latex_project_named
+    project = latex_project_named(text)
+    if not (project or IntentRouter.LATEX_CONTEXT.search(text)):
+        return {}
+    ruled = {tool: pattern.search(text).group(0) for pattern, tools in IntentRouter.LATEX_RULES if pattern.search(text)
+             for tool in tools if tool in available}
+    if not ruled and project and "scan_latex" in available:
+        ruled["scan_latex"] = project
+    return ruled
 
 
 def calculates_from_a_file(text):

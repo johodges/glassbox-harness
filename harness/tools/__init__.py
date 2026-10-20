@@ -11,6 +11,10 @@ from .files import ReadFileTool, SearchReferencesTool
 from .fire_calcs import FireCalculationTool
 from .image import ImageTool
 from .latex import UpdateLatexTool
+from .latex_audit import AuditLatexTool
+from .latex_fix import EditTexTool, FixLatexTool
+from .latex_project import BuildLatexTool, ScanLatexTool
+from .latexdiff import MakeLatexdiffTool
 from .model3d import Model3DTool
 from .music import MusicTool
 from .office import UpdatePowerPointTool, UpdateWordTool
@@ -31,4 +35,7 @@ def all_tools():
     more = (FireCalculationTool(), QueryDatabaseTool(), AskSubagentTool(), UpdateExcelTool())
     # reviewing and developing code: tests, a linter, a search, new code, and a review the harness checks
     code = (RunTestsTool(), CheckCodeTool(), SearchCodeTool(), WriteCodeTool(), CreateFileTool(), ReviewCodeTool())
-    return {t.name: t for t in media + documents + seeing + more + code}
+    # LaTeX projects: build, map, audit, fix, edit, and a latexdiff for review (latex_project.py ... latexdiff.py)
+    latex = (BuildLatexTool(), ScanLatexTool(), AuditLatexTool(), FixLatexTool(), EditTexTool(),
+             MakeLatexdiffTool())
+    return {t.name: t for t in media + documents + seeing + more + code + latex}

@@ -1,0 +1,31 @@
+{
+  "project": "workspace/latex_demo",
+  "about": "The errors planted in workspace/latex_demo, for compare_audit.py. Kept outside workspace/ so no tool can show it to the LLM. A finding matches a planted error when it is in the same file and its evidence contains the anchor (whitespace ignored).",
+  "planted": [
+    {"id": 1, "category": "text", "what": "doubled word across a line break", "file": "sections/results.tex",
+     "anchor": "in in", "confidence": "certain", "fix": "in"},
+    {"id": 2, "category": "text", "what": "misspelling", "file": "sections/introduction.tex",
+     "anchor": "struture", "confidence": "certain", "fix": "structure"},
+    {"id": 3, "category": "text", "what": "the same name spelled two ways", "file": "sections/introduction.tex",
+     "anchor": "Castellamare", "confidence": "likely", "fix": "Castellammare"},
+    {"id": 4, "category": "crossrefs", "what": "a typed figure number that is wrong", "file": "sections/results.tex",
+     "anchor": "Figure 3", "confidence": "certain", "fix": "Figure~\\ref{fig:hrr}"},
+    {"id": 5, "category": "crossrefs", "what": "a section number that does not exist", "file": "sections/introduction.tex",
+     "anchor": "Section 4.0", "confidence": "needs a person", "fix": null},
+    {"id": 6, "category": "crossrefs", "what": "a reference to an undefined label", "file": "sections/design_fires.tex",
+     "anchor": "fig:smoke", "confidence": "needs a person", "fix": null},
+    {"id": 7, "category": "references", "what": "a citation with no entry in the .bib", "file": "sections/results.tex",
+     "anchor": "nist2026", "confidence": "needs a person", "fix": null},
+    {"id": 8, "category": "references", "what": "a .bib entry that is never cited", "file": "refs.bib",
+     "anchor": "drysdale2011", "confidence": "likely", "fix": null},
+    {"id": 9, "category": "references", "what": "the same work entered twice", "file": "refs.bib",
+     "anchor": "fdsguide2023", "confidence": "likely", "fix": null},
+    {"id": 10, "category": "crossrefs", "what": "a table-of-contents title that differs from the heading",
+     "file": "sections/results.tex", "anchor": "Measured Peak Heat Release Rates", "confidence": "likely",
+     "fix": "\\section{Measured Peak Heat Release Rates}"},
+    {"id": 11, "category": "text", "what": "a date with a full stop for a comma", "file": "main.tex",
+     "anchor": "January 8. 2025", "confidence": "certain", "fix": "January 8, 2025"},
+    {"id": 12, "category": "text", "what": "no space after a citation", "file": "sections/introduction.tex",
+     "anchor": "}can", "confidence": "certain", "fix": "} can"}
+  ]
+}

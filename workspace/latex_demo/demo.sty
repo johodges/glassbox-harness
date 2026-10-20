@@ -1,0 +1,13 @@
+% demo.sty: the house style of the latex_demo paper (a stand-in for an organisation's report style)
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{demo}[2026/10/20 latex_demo house style]
+\RequirePackage[margin=25mm]{geometry}
+\RequirePackage{graphicx}
+\RequirePackage{amsmath}
+\RequirePackage{booktabs}
+\RequirePackage[hidelinks]{hyperref}
+\graphicspath{{figures/}}
+% quantities used across the note
+\newcommand{\HRR}{\ensuremath{\dot{Q}}}
+\newcommand{\units}[1]{\,\mathrm{#1}}
+\newcommand{\alphafast}{0.04689}

@@ -63,6 +63,11 @@ FOUR_BIT = {"code_llm"}
 # Only changes: on "run the tests and tell me which fails" or "lint this file" the 7B coder edited files nobody asked
 # it to touch, while Llama 3B answered right in a seventh of the time. HarnessConfig.route_planner turns it off.
 CODE_TOOLS = {"run_tests", "check_code", "search_code", "write_code", "create_file", "review_code"}
+
+# LaTeX projects (tools/latex_project.py, latex_audit.py, latex_fix.py, latexdiff.py): latexmk, BibTeX and latexdiff
+# come with TeX Live. timeout: seconds per build; overfull_pt: smaller overfull boxes are not reported; language: the
+# spell checker's dictionary; judge: the LLM looks at each "likely" finding once (JUDGE in latex_audit.py)
+LATEX = {"timeout": 300, "overfull_pt": 1.0, "max_project_mb": 500, "language": "en", "judge": True}
 CODE_CHANGE = (r"\b(?:fix(?:es|ing)?|repair|correct|write|add|implement|refactor|rewrite|change|rename|create|update)\b"
                r"|\bmake\b[^.?!]{0,40}\bpass(?:es)?\b")
 
@@ -135,4 +140,6 @@ class HarnessConfig:
         "fire_calculation", "query_database", "ask_subagent", "update_excel",
         # reviewing and developing code: pytest, a linter, a code search, new code, a checked review (tools/coding.py)
         "run_tests", "check_code", "search_code", "write_code", "create_file", "review_code",
+        # LaTeX projects: build, map, audit, fix and mark up the changes for review (tools/latex_project.py, ...)
+        "build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff",
     ])

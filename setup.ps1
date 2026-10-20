@@ -64,5 +64,9 @@ if ($installed -ne 0) { throw "Installing requirements.txt failed: see pip's mes
 
 & $py -c "import torch; print('CUDA available:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 
+# The LaTeX tools run TeX Live's programs; nothing else needs them
+$missing = @("latexmk", "pdflatex", "bibtex", "latexdiff") | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
+if ($missing) { Write-Host "`nNot on the PATH: $($missing -join ', '). The LaTeX tools need TeX Live (https://tug.org/texlive/)." }
+
 Write-Host "`nNext: download the models (~65 GB, once):   .\.venv\Scripts\python.exe download_models.py"
 Write-Host "Then try:   .\.venv\Scripts\python.exe run_agent.py `"Paint a watercolor fox and narrate a one-line story about it`""

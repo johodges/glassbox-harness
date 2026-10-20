@@ -49,9 +49,49 @@ def _key(text):
 
 
 def named_paths(prompt):
-    """Words in the request that look like a file the tools could use (by extension). Plain string handling."""
+    """Words in the request that look like a file the tools could use (by extension), a .zip, or a folder (a path
+    with a slash and no extension, e.g. ..\\papers\\fire_note). Plain string handling."""
     words = (next(g for g in m.groups() if g).rstrip(".,;:!?)") for m in WORDS.finditer(prompt))
-    return [w for w in words if Path(w).suffix.lower() in IMPORTABLE]
+    return [w for w in words if Path(w).suffix.lower() in IMPORTABLE | {".zip"}
+            or (("/" in w or "\\" in w) and not Path(w).suffix)]
+
+
+# A folder or .zip comes in without these: build files (a stale .aux misleads the audit), macOS and git litter
+SKIP_ON_IMPORT = ("__MACOSX", ".git", ".DS_Store", "*.aux", "*.log", "*.out", "*.toc", "*.fls", "*.fdb_latexmk",
+                  "*.synctex.gz", "*.bbl", "*.blg", "*.bcf", "*.run.xml", "*.xdv", "__pycache__")
+
+
+def import_folder(hit, dest):
+    """A folder the user named -> a copy in the run folder (size capped), or a reason it wasn't copied."""
+    from ..config import LATEX
+    size = sum(f.stat().st_size for f in hit.rglob("*") if f.is_file()) / 1e6
+    if size > LATEX["max_project_mb"]:
+        return f"not copied: {size:.0f} MB, over the {LATEX['max_project_mb']} MB limit (config LATEX)"
+    shutil.copytree(hit, dest, ignore=shutil.ignore_patterns(*SKIP_ON_IMPORT), dirs_exist_ok=True)
+    return None
+
+
+def import_zip(hit, dest):
+    """A .zip the user named -> unpacked in the run folder (size capped). A member whose name points outside the
+    folder ('../../x') is skipped, so an archive can never write anywhere else."""
+    import fnmatch
+    import zipfile
+    from ..config import LATEX
+    with zipfile.ZipFile(hit) as z:
+        members = [m for m in z.infolist() if not m.is_dir()
+                   and not any(fnmatch.fnmatch(part, pattern) for part in Path(m.filename).parts
+                               for pattern in SKIP_ON_IMPORT)]
+        size = sum(m.file_size for m in members) / 1e6
+        if size > LATEX["max_project_mb"]:
+            return f"not unpacked: {size:.0f} MB, over the {LATEX['max_project_mb']} MB limit (config LATEX)"
+        for m in members:
+            target = (dest / m.filename).resolve()
+            if not target.is_relative_to(dest.resolve()):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(m) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+    return None
 
 
 def import_named_files(prompt, ctx, cwd=None):
@@ -59,26 +99,38 @@ def import_named_files(prompt, ctx, cwd=None):
     Copy each file the user named into this run's folder, so it is inside the fence. A relative path is read
     from the folder the harness was started in (as a shell would); a path that doesn't exist (a typo such as
     "...\\template.pptx") is looked up by its file name in that folder and its parent. Files already inside
-    workspace/ need nothing. -> [(the name as written, the copy or None, how it was found)]
+    workspace/ need nothing. A folder is copied, and a .zip unpacked, into outputs/run_.../inputs/<name>/.
+    -> [(the name as written, the copy or None, how it was found)]
     """
     cwd = Path(cwd or Path.cwd()).resolve()
     imported = []
     for raw in named_paths(prompt):
         p = Path(raw)
-        hit = next((c.resolve() for c in ([p] if p.is_absolute() else [cwd / p, PROJECT_DIR / p]) if c.is_file()), None)
+        folder = not p.suffix
+        exists = Path.is_dir if folder else Path.is_file
+        hit = next((c.resolve() for c in ([p] if p.is_absolute() else [cwd / p, PROJECT_DIR / p]) if exists(c)), None)
         how = "found where the request said"
-        if hit is None:
+        if hit is None and not folder:
             hit = next(((d / p.name).resolve() for d in (cwd, cwd.parent, PROJECT_DIR.parent) if (d / p.name).is_file()),
                        None)
             how = "found by its file name"
         if hit is None:
-            imported.append((raw, None, "not found"))
+            if not folder:  # a word with a slash that is no folder ("kW/s") is not worth a line
+                imported.append((raw, None, "not found"))
             continue
         if hit.is_relative_to(WORKSPACE_DIR) or hit.is_relative_to(ctx.run_dir.resolve()):
             continue  # already inside the fence
-        copy = ctx.run_dir / "inputs" / hit.name
-        copy.parent.mkdir(exist_ok=True)
-        shutil.copy2(hit, copy)
+        if folder or hit.suffix.lower() == ".zip":
+            copy = ctx.run_dir / "inputs" / (hit.name if folder else hit.stem)
+            problem = import_folder(hit, copy) if folder else import_zip(hit, copy)
+            if problem:
+                imported.append((raw, None, problem))
+                continue
+            how += ", copied" if folder else ", unpacked"
+        else:
+            copy = ctx.run_dir / "inputs" / hit.name
+            copy.parent.mkdir(exist_ok=True)
+            shutil.copy2(hit, copy)
         for name in (raw, str(hit), hit.name):
             ctx.imports[_key(name)] = copy.resolve()
         imported.append((raw, copy, f"{how}: {hit}"))

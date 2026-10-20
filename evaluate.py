@@ -89,6 +89,14 @@ TESTS = [
     # fix: the fact that matters is the last test run, "all 9 tests passed"
     ("Run the tests in workspace/code_demo and fix the code so that the failing test passes.",
      ["run_tests", "edit_code", "run_tests"], {"summary": "tests passed"}),
+    # a LaTeX paper (harness/tools/latex_*.py): the audit, the fixes and the diff are plain Python and TeX Live; the
+    # LLM picks the tool and the path, and as JUDGE says yes or no to each likely finding. In order: the fixes use
+    # the audit's ledger, and the latexdiff the fixed copy. compare_audit.py scores the audit against its answer key
+    ("Audit workspace/latex_demo.", ["audit_latex"], {"ledger": "Figure 3"}),
+    ("Fix the errors in the last audit of workspace/latex_demo.", ["fix_latex"], {"summary": "verified"}),
+    ("Make a latexdiff of workspace/latex_demo against the fixed copy.", ["make_latexdiff"], {"diff_pdf": ".pdf"}),
+    ('In workspace/latex_demo, change "a fast fire" to "a fast t-squared fire" and give me a latexdiff.',
+     ["edit_tex", "make_latexdiff"], {"changed": "design_fires.tex"}),
 ]
 
 # APPROVAL (agent.py) asks a person before run_script runs code. Here nobody is asked, and every call is approved,

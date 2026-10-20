@@ -1,0 +1,38 @@
+\section{Design fires}
+\label{sec:design-fires}
+
+The heat release rate of a t-squared fire is
+\begin{equation}
+  \HRR = \alpha t^2 ,
+  \label{eq:tsquared}
+\end{equation}
+where $t$ is the time since ignition and $\alpha$ is the growth coefficient. Table~\ref{tab:alpha} lists the four
+standard classes. A fast fire, with $\alpha = \alphafast\units{kW/s^2}$, reaches $1\units{MW}$ in about 146 seconds.
+
+\begin{table}[htb]
+  \centering
+  \caption{Growth coefficients of the standard t-squared fires.}
+  \label{tab:alpha}
+  \begin{tabular}{lcc}
+    \toprule
+    Class & $\alpha$ (kW/s$^2$) & Time to 1 MW (s) \\
+    \midrule
+    Slow & 0.00293 & 584 \\
+    Medium & 0.01172 & 292 \\
+    Fast & 0.04689 & 146 \\
+    Ultrafast & 0.1876 & 73 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The measured fires of upholstered furniture grow faster than the fast class in their first minutes, which is why
+codes in the Castellammare district assume a fast fire for living rooms~\cite{babrauskas1992}. Figure~\ref{fig:hrr}
+compares the four classes with a measured sofa fire, and the smoke layer that forms under the ceiling is shown in
+Figure~\ref{fig:smoke}.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=0.75\textwidth]{hrr_curves}
+  \caption{Heat release rate of the four t-squared design fires and a measured sofa fire.}
+  \label{fig:hrr}
+\end{figure}
