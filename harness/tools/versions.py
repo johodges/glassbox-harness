@@ -41,8 +41,12 @@ def original_of(path, ctx):
 
 def document_key(path, ctx):
     """One ledger per document, named after the file the user knows ('workspace/review_demo/test_plan.docx').
-    Versions the harness writes (test_plan_redline.docx) belong to their source's ledger, through record()."""
-    return re.sub(r"[^A-Za-z0-9]+", "_", rel(original_of(path, ctx))).strip("_")
+    Versions the harness writes (test_plan_redline.docx) belong to their source's ledger, through record(). A long
+    path keeps its last 60 characters plus a hash of the whole, so the ledger's own path stays under Windows' 260."""
+    key = re.sub(r"[^A-Za-z0-9]+", "_", rel(original_of(path, ctx))).strip("_")
+    if len(key) > 80:
+        key = key[-60:].strip("_") + "_" + hashlib.sha256(key.encode()).hexdigest()[:10]
+    return key
 
 
 class Versions:
@@ -55,11 +59,15 @@ class Versions:
     @classmethod
     def of(cls, path, ctx):
         """The ledger of the document a tool is reading (a source, or a version the harness wrote earlier)."""
-        digest = sha256(path)
+        digest, here = sha256(path), str(Path(path).resolve())
         folder = Path(ctx.facts.get("versions_dir") or VERSIONS_DIR)
-        for ledger_file in folder.glob("*.json") if folder.is_dir() else []:  # a version we wrote: its source's ledger
-            data = json.loads(ledger_file.read_text(encoding="utf-8"))
+        ledgers = [json.loads(f.read_text(encoding="utf-8")) for f in folder.glob("*.json")] if folder.is_dir() else []
+        for data in ledgers:  # the same bytes as a version: a file the harness wrote, or one it has seen
             if any(v["sha256"] == digest for v in data.get("versions", [])):
+                return cls(data["document"], folder)
+        for data in ledgers:  # a file the harness wrote, which the user then saved over in place: its ledger still
+            if any(v.get("origin") == "harness" and str(Path(v["file"]).resolve()) == here
+                   for v in data.get("versions", [])):
                 return cls(data["document"], folder)
         return cls(document_key(path, ctx), folder)
 

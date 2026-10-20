@@ -153,4 +153,8 @@ class HarnessConfig:
         "run_tests", "check_code", "search_code", "write_code", "create_file", "review_code",
         # LaTeX projects: build, map, audit, fix and mark up the changes for review (tools/latex_project.py, ...)
         "build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff",
+        # a Word document under review: tracked changes, comments, compare, accept or reject (tools/word_review.py)
+        "read_review", "redline_docx", "comment_docx", "compare_docx", "accept_changes",
+        # a deck edited with its author: what changed, edits that touch nothing else, a render check (deck_edit.py)
+        "read_deck", "diff_decks", "edit_deck", "check_deck",
     ])

@@ -92,6 +92,16 @@ class IntentRouter:
         "fix_latex": ["fixing the errors an audit found"],
         "edit_tex": ["changing words in a LaTeX paper"],
         "make_latexdiff": ["a latexdiff for review"],
+        # Word review and deck editing (tools/word_review.py, deck_edit.py): all rule-only, see OFFICE_RULES
+        "read_review": ["the tracked changes and comments in a Word document"],
+        "redline_docx": ["editing a Word document with track changes"],
+        "comment_docx": ["comments in a Word document"],
+        "compare_docx": ["comparing two versions of a Word document"],
+        "accept_changes": ["accepting or rejecting tracked changes"],
+        "read_deck": ["reading the slides of a deck"],
+        "diff_decks": ["what changed between two versions of a deck"],
+        "edit_deck": ["moving, deleting or editing slides"],
+        "check_deck": ["checking slides for text that doesn't fit"],
     }
     TEMPLATE = "This request asks for {}."
 
@@ -101,7 +111,9 @@ class IntentRouter:
                       "update_latex", "edit_code", "run_script", "convert_presentation", "export_pdf", "digitize_plot",
                       "fire_calculation", "query_database", "ask_subagent", "update_excel",
                       "run_tests", "check_code", "search_code", "write_code", "create_file", "review_code",
-                      "build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff"}
+                      "build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff",
+                      "read_review", "redline_docx", "comment_docx", "compare_docx", "accept_changes",
+                      "read_deck", "diff_decks", "edit_deck", "check_deck"}
     MENTIONS_FILES = re.compile(r"\.(pptx|potx|docx|xlsx|tex|py|pdf|md|txt|png|jpe?g)\b|\b(files?|documents?|slides?|deck|presentation|"
                                 r"powerpoint|word document|report|references?|scripts?|code|latex|workspace|templates?|"
                                 r"pdf)\b", re.I)
@@ -158,11 +170,47 @@ class IntentRouter:
         (re.compile(r"\b(?:change|replace)\s+[\"\u201c'][^\"\u201d']+[\"\u201d']\s+(?:to|with|by|into)\b", re.I),
          ["edit_tex"])]
     LATEX_TOOLS = {"build_latex", "scan_latex", "audit_latex", "fix_latex", "edit_tex", "make_latexdiff"}
+    # A Word document under review, and a deck edited with its author (OFFICE_COLLAB_DESIGN.md W8, P7). As with a
+    # LaTeX paper, a rule here offers only these tools. "Write the Results section of report.docx" and "update slide 3
+    # with three bullet points from the references" match none of them and keep update_word_document and
+    # update_powerpoint; "convert ... to the template" keeps convert_presentation.
+    REVIEW_CONTEXT = re.compile(r"\.docx\b|\bword (?:document|file)s?\b", re.I)
+    REVIEW_RULES = [
+        # edits as tracked changes (not "the tracked changes" already in it: that is read_review)
+        (re.compile(r"\b(?:with|as|in) track(?:ed)?[- ]changes?\b|\bredline\w*|\bwith changes on\b|"
+                    r"\bas (?:a )?revisions?\b", re.I), ["redline_docx"]),
+        (re.compile(r"\b(?:reply|replies|respond|answer|resolve[ds]?)\b[^?!\n]{0,50}\bcomments?\b|"
+                    r"\bcomments?\s+(?:c|#)?\d+|\b(?:add|leave|insert|put|give|write)\w*\b[^.?!]{0,30}\bcomments?\b",
+                    re.I), ["comment_docx"]),
+        (re.compile(r"\b(?:accept|reject)\w*\b[^?!\n]{0,60}\b(?:changes?|revisions?|edits?)\b|"
+                    r"\b(?:changes?|revisions?)\b[^.?!]{0,30}\b(?:accept|reject)\w*|\bclean (?:copy|version)\b", re.I),
+         ["accept_changes"]),
+        (re.compile(r"\bcompar\w+\b|\bwhat (?:did|have) (?:i|we) changed?\b|\bchanged since\b|"
+                    r"\bdifferences? between\b", re.I), ["compare_docx"]),
+        (re.compile(r"\bopen comments?\b|\bwhich comments\b|\bwho (?:made|changed|edited|wrote)\b|"
+                    r"\bwhat is (?:still )?pending\b|\breview (?:status|state)\b|"
+                    r"\b(?:list|show)\b[^.?!]{0,30}\b(?:tracked changes|comments)\b", re.I), ["read_review"])]
+    DECK_CONTEXT = re.compile(r"\.pptx\b|\bdecks?\b|\bslides?\b|\bpresentations?\b|\bpowerpoint\b", re.I)
+    NOT_DECK = re.compile(r"\btemplates?\b|\.potx\b|\bconvert|\bbullet points?\b|\breference notes?\b", re.I)
+    DECK_RULES = [
+        (re.compile(r"\bwhat (?:did|have) (?:i|we) changed?\b|\bcompar\w+\b|\bdiff\b|\bdifferences?\b|"
+                    r"\bchanged since\b|\bmy (?:own )?edits\b|\bas the latest\b|\bsync\w*\b", re.I), ["diff_decks"]),
+        (re.compile(r"\bmove (?:the )?slides?\b|\breorder\w*\b|\b(?:after|before) slide \d+|"
+                    r"\b(?:delete|remove) (?:the )?slides?\b|\bduplicate\w*\b|\binsert (?:a )?(?:new )?slide\b|"
+                    r"\badd a (?:new )?slide after\b|\bimport (?:the )?slides?\b|\bspeaker notes\b|"
+                    r"\bnotes (?:to|on|for) slide\b|\bchange\s+[\"\u201c'][^\"\u201d']+[\"\u201d']\s+(?:to|into)\b",
+                    re.I), ["edit_deck"]),
+        (re.compile(r"\bcheck\b[^.?!]{0,40}\b(?:overflow|fit|deck|slides?)\b|\boverflow\w*\b|\bcut off\b|"
+                    r"\brender\w*\b|\bdoes (?:it|the \w+) fit\b", re.I), ["check_deck"]),
+        (re.compile(r"\bwhat(?:'s| is) on slide\b|\bshow (?:me )?slides?\b|\bread (?:the )?(?:deck|slides?)\b",
+                    re.I), ["read_deck"])]
+    OFFICE_TOOLS = {"read_review", "redline_docx", "comment_docx", "compare_docx", "accept_changes",
+                    "read_deck", "diff_decks", "edit_deck", "check_deck"}
     # Tools the classifier never scores: only a rule can offer them. It offered search_references for "What are
     # the values in this chart?", and edit_code for a .tex request, which Llama then used to overwrite \section{Results}.
     RULE_ONLY = {"search_references", "edit_code", "run_script", "digitize_plot", "fire_calculation", "query_database",
                  "ask_subagent", "update_excel", "run_tests", "check_code", "search_code", "write_code", "create_file",
-                 "review_code"} | LATEX_TOOLS
+                 "review_code"} | LATEX_TOOLS | OFFICE_TOOLS
 
     def __init__(self, tracer, device="cpu", threshold=0.5):
         self.tracer, self.threshold = tracer, threshold
@@ -186,14 +234,15 @@ class IntentRouter:
                 ruled.pop("run_script", None)                             # the linter; run_script is for workspace/scripts
             if "review_code" in ruled:  # a review reports; it changes nothing (".py" brought edit_code)
                 ruled.pop("edit_code", None)
-            latex = latex_rules(text, available)
-            if latex:  # a request about a LaTeX paper gets the LaTeX project tools, and nothing else
+            latex = latex_rules(text, available) or office_rules(text, available)
+            if latex:  # a request about a LaTeX paper, a reviewed Word document or a deck's slides gets those tools only
                 ruled = latex
             documents = [name for name in available if name in self.DOCUMENT_TOOLS]
             if latex:
                 candidates = []
                 self.tracer.say("rule: " + ", ".join(f"'{word}' -> {tool}" for tool, word in ruled.items())
-                                + "  (a LaTeX paper: only the LaTeX project tools; the classifier scores nothing)",
+                                + "  (a paper, a reviewed document or a deck's slides: only their tools; the "
+                                  "classifier scores nothing)",
                                 kind="python")
             elif ruled:  # the request names a file: it is a document request, so media tools are not scored
                 candidates = documents
@@ -250,6 +299,26 @@ def latex_rules(text, available):
              for tool in tools if tool in available}
     if not ruled and project and "scan_latex" in available:
         ruled["scan_latex"] = project
+    return ruled
+
+
+def office_rules(text, available):
+    """The Word review or deck tools the request asks for -> {tool: the words that matched}, or {}."""
+    ruled = {}
+    if IntentRouter.REVIEW_CONTEXT.search(text):
+        ruled = {tool: p.search(text).group(0) for p, tools in IntentRouter.REVIEW_RULES if p.search(text)
+                 for tool in tools if tool in available}
+        if "compare_docx" in ruled:  # "compare ... with track changes": the compare writes the tracked changes
+            ruled.pop("redline_docx", None)
+        if "redline_docx" in ruled and not re.search(r"\b(?:reply|respond|answer|resolve)", text, re.I):
+            ruled.pop("comment_docx", None)  # "change X and add a comment": the edit carries its comment
+        if "accept_changes" in ruled:
+            ruled.pop("redline_docx", None)
+    elif IntentRouter.DECK_CONTEXT.search(text) and not IntentRouter.NOT_DECK.search(text):
+        ruled = {tool: p.search(text).group(0) for p, tools in IntentRouter.DECK_RULES if p.search(text)
+                 for tool in tools if tool in available}
+        if "edit_deck" in ruled or "diff_decks" in ruled:
+            ruled.pop("read_deck", None) if "show" not in text.lower() else None
     return ruled
 
 

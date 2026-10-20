@@ -1,0 +1,16 @@
+{
+  "template": "workshop_template",
+  "about": "The keep-out zones of workspace/templates/workshop_template.pptx, read by check_deck (harness/tools/deck_edit.py). Positions are in cm from the slide's top-left corner (the slide is 33.87 x 19.05 cm). The bottom-right corner is kept for the workshop logo, and content stays above the footer rule at 17.25 cm; the template's own date, footer and slide-number placeholders live below the rule. workspace/deck_demo/briefing.pptx draws the logo and the rule on its slide master. Copy this file for your own template and change the numbers.",
+  "match": {
+    "names": ["workshop_template", "workshop template"],
+    "layouts": ["Section Header Light"],
+    "slide_size_cm": [33.87, 19.05]
+  },
+  "keep_out": [
+    {"zone": "logo", "left": 29.3, "top": 17.4, "width": 3.2, "height": 1.4,
+     "why": "the workshop logo, bottom right"},
+    {"zone": "footer rule", "left": 0.0, "top": 17.25, "width": 33.87, "height": 1.8,
+     "why": "everything on a slide stays above the footer rule"}
+  ],
+  "allowed_placeholders": ["sldNum", "ftr", "dt"]
+}

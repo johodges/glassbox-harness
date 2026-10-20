@@ -282,6 +282,9 @@ Read in this order:
 | [compare_code.py](compare_code.py) | the same code requests with Llama 3.2 3B and Qwen2.5-Coder 7B (4-bit): tests afterwards, hidden checks, findings, cost |
 | [harness/tools/latex_project.py](harness/tools/latex_project.py), [latex_audit.py](harness/tools/latex_audit.py), [latex_fix.py](harness/tools/latex_fix.py), [latexdiff.py](harness/tools/latexdiff.py) | a LaTeX paper: build and read the log, scan the source, three auditors and a ledger, verified fixes, a latexdiff for review ([below](#auditing-a-latex-paper-audit-fix-latexdiff)) |
 | [compare_audit.py](compare_audit.py), [tests/](tests/) | the audit scored against the demo paper's answer key; the harness's unit tests (`python -m pytest`) |
+| [harness/tools/word_review.py](harness/tools/word_review.py), [word_model.py](harness/tools/word_model.py), [docx_markup.py](harness/tools/docx_markup.py), [word_com.py](harness/tools/word_com.py) | a Word document under review: tracked changes and comment threads read and written as XML, every edit proven by reject-all and accept-all, Word's own Compare in its own process ([below](#reviewing-a-word-document-and-editing-a-deck-with-its-author)) |
+| [harness/tools/deck_edit.py](harness/tools/deck_edit.py), [deck_model.py](harness/tools/deck_model.py), [versions.py](harness/tools/versions.py), [office_common.py](harness/tools/office_common.py) | a deck edited with its author: slides matched by content, edits that provably touch no other slide; the version ledger; who the edits are by and where results may go |
+| [compare_review.py](compare_review.py), [compare_decks.py](compare_decks.py) | the Word and deck tools scored against their demo files' answer keys |
 | [compare_quantization.py](compare_quantization.py) | the planner's weights in 16, 8 and 4 bits: memory, load time, speed, word problems, the eval suite, valid tool-call JSON |
 
 ## Experiments for a class
@@ -1690,6 +1693,109 @@ which TeX programs are missing.
 heading, as the planning proposal does with WUI; one definition per chapter, the custom in long reports, is reported
 as "defined twice"; a duplicate that JUDGE confirms is not merged, because that changes every `\cite` of one key.
 
+## Reviewing a Word document, and editing a deck with its author
+
+Two kinds of collaboration on Office files, copied from the jobs they came from:
+- **Word:** redlines against an earlier version, comments, replies, a 311-comment adjudication, accept and reject.
+- **PowerPoint:** "what did I change in my deck?", surgical slide edits that leave everything else alone, and a
+  render check after each one.
+
+As with the LaTeX tools, nearly all of it is plain Python, here lxml on the XML inside the .docx and .pptx. Word and
+PowerPoint are used only for what they do best: Word's own Compare, rendering slides, and confirming that Word opens a
+file and counts the same revisions. The LLM picks the tool and writes the words. The design is
+`OFFICE_COLLAB_DESIGN.md`, beside the repository.
+
+```powershell
+.\.venv\Scripts\python.exe run_agent.py "Which comments in workspace/review_demo/test_plan.docx are still open, and who made the tracked changes?"
+.\.venv\Scripts\python.exe run_agent.py "In workspace/review_demo/test_plan.docx, with track changes, change \"within 5 minutes\" to \"within 3 minutes\" and add a comment that the sprinkler data supports it."
+.\.venv\Scripts\python.exe run_agent.py "Compare workspace/review_demo/test_plan_v2.docx with test_plan.docx, with track changes."
+.\.venv\Scripts\python.exe run_agent.py "What did I change in workspace/deck_demo/briefing_edited.pptx compared with briefing.pptx?"
+.\.venv\Scripts\python.exe run_agent.py "Delete slide 7 of workspace/deck_demo/briefing.pptx and check the deck for overflow."
+.\.venv\Scripts\python.exe compare_review.py      # the Word tools against their answer key
+.\.venv\Scripts\python.exe compare_decks.py       # the deck tools against theirs
+```
+
+**Three rules hold for every tool:**
+- **Who wrote it.** Every tracked change and comment is signed `config.REVIEW_AUTHOR`: the model that planned the
+  request and the person it worked for, for example "Llama 3.2 3B Instruct, via. Glass-box harness (for Jonathan
+  Hodges)". In one past job the author was the user's own name, and their revisions and Claude's could no longer be
+  told apart. `HarnessConfig.review_for` sets the person; otherwise it is `GLASSBOX_USER`, git's `user.name`, or the
+  login name.
+- **Copies only.** Every result is a new file in the run folder (`office_common.output_path` refuses anything else).
+  A file Word or PowerPoint has open is read from a copy. The harness starts its own invisible Word, closes only
+  what it opened, and never quits a PowerPoint it didn't start (one past export script closed the user's deck). No
+  request can lose your work.
+- **Interactive by default.** A person answers y/n before the harness accepts or rejects someone else's changes, or
+  deletes a slide; `run_agent.py --yes` approves without asking.
+
+**The version ledger.** `outputs/versions/<document>.json` keeps every version the harness has seen or written, told
+apart by SHA-256, with a copy of each. That is what gives "with track changes from v5", "what did I change since your
+version" and "use mine as the latest" an exact meaning across requests: VERSION CHECK says whether a file is new, a
+version the harness wrote, or one you edited since.
+
+### The Word tools ([harness/tools/word_review.py](harness/tools/word_review.py))
+
+| tool | the LLM writes | what does the work | what the LLM reads back |
+|------|----------------|--------------------|-------------------------|
+| `read_review` | a .docx | `word_model.docx_view`: every insertion, deletion and formatting change with author and date, every comment with its anchor text, thread and done flag; the REVISION CENSUS | one census line, the open threads, a section's marked text; `review.md` with everything |
+| `redline_docx` | a .docx and a list of edits (`find`/`replace`/`comment`, insert or delete a paragraph or table row) | a word-level diff of each edit written as `w:ins`/`w:del` under the review author; track changes left on for your next edits | each edit verified, refused (it touches another author's pending change: a person decides) or failed and undone; the census before and after |
+| `comment_docx` | a .docx and comments (`on` some exact text, `reply_to` a comment, `resolve`) | python-docx for new comments; the harness's own `commentsExtended`, `commentsIds` and `people` parts for replies and the done flag | the threads before and after |
+| `compare_docx` | two versions (or one, and the version ledger finds the other) | Word's own Compare in its own process (`OFFICE["compare"] = "word"`), falling back to a Python paragraph-and-word diff; `"python"` never uses Word | the changes, which method made them |
+| `accept_changes` | a .docx, which changes (all, an author, ids), accept or reject | plain Python unwraps or drops each revision | the census after; Word's page count before and after |
+
+Every write ends in checks, and a failing edit is undone:
+1. rejecting the harness's revisions gives back the original text and formatting exactly;
+2. accepting them gives the intended text;
+3. nothing changed outside a tracked span;
+4. every id is unique and every element in the order Word expects;
+5. Word opens the file with no repair and counts the same revisions and comments.
+
+Each check answers a past failure: an untracked insert slipped into a "review and comment" round, cloned table rows
+carried old revisions, 26 duplicate ids, a stray paragraph after reject-all, and "I accepted the changes" that wasn't
+true of the file.
+
+### The deck tools ([harness/tools/deck_edit.py](harness/tools/deck_edit.py))
+
+| tool | the LLM writes | what does the work | what the LLM reads back |
+|------|----------------|--------------------|-------------------------|
+| `read_deck` | a .pptx (and slides to show in full) | `deck_model.deck_view`: every shape, inside groups too, with its formatted runs, pictures by hash, tables, notes, and a fingerprint of each slide's XML | one line per slide; full shapes and notes for the slides asked about |
+| `diff_decks` | two versions (or one, and the version ledger finds the other) | slides matched by content (words and picture hashes, in order), never by part names, which PowerPoint renumbers on save | moved, deleted, added and changed slides, each change as `slide 6: bullet 2 "fast" -> "**fast**"` |
+| `edit_deck` | a .pptx and operations (text, notes, insert, move, delete, duplicate, import) | slide numbers turned into slide ids first; text replaced inside its runs so formatting stays; charts and media copied, never shared | each op done or not; the changed slides |
+| `check_deck` | a .pptx | PowerPoint renders the changed slides and measures their text, plus keep-out zones (logo, footer) from `workspace/template_profiles/`, plus references made stale by a move ("slide 12") | problems by slide, the rendered slides |
+
+`edit_deck` proves that every slide not named in an operation is unchanged (its fingerprint), that the package is
+whole, and that PowerPoint opens it with the expected slide count.
+
+### Measured
+
+| | result |
+|---|---|
+| `compare_review.py` | census 9/9 exact, and Word counts the same 10 revisions, 6 comments, 3 pages; 21 scripted edits as the key expects (17 verified, 2 need a person, 2 refused); compare 4/4 planted differences through Word (~12 s) and through Python (<0.1 s) |
+| `compare_decks.py` | diff 6/6 planted edits and none extra, 0 changes reported for decks PowerPoint merely re-saved; 16 single operations and one 14-operation batch pass every check; check 2/2 planted problems, 0 false alarms |
+| unit tests | 60 for Word, 33 for decks, 146 for the whole harness (`python -m pytest`) |
+
+The demo files are synthetic (`workspace/make_review_demo.py`, `make_deck_demo.py`): the repository is public.
+
+**What a small planner can and can't do here.** Llama 3.2 3B routes these requests and passes explicit edits ("change
+X to Y", "move slide 5 after 2"); the evaluate.py tests measure exactly that. Deciding which edits a review needs,
+answering reviewers, or rewriting notes from a recording are judgement, and wait for a frontier planner (the Foundry
+profile).
+
+**What the first run with Llama showed.** Llama 3.2 3B routed all ten Office requests to the right tools on the first
+`evaluate.py` run (43/44 overall). Two of its calls still needed the harness, and both fixes are CHECK ARGS rules:
+- **A reply that wasn't one.** Asked to "reply to comment 4 ... that the duct sizes are now in Table 1, and mark it
+  resolved", it wrote a new comment on the words "duct sizes" with the text "now in Table 1". The words didn't anchor,
+  so no reply was written, and its answer said one was. The test passed anyway, because it only looked for
+  "resolved"; the HARNESS NOTE ("c4 resolved; 1 not done") showed the gap. Now a request that says "reply to comment
+  N" turns a new comment into that reply, the reply uses the user's own words, and the test checks for the reply.
+- **The wrong slide checked.** Asked to "delete slide 7 and check the deck for overflow", it passed `slides: "7"` to
+  `check_deck`: the slide it had just deleted, and in the new deck another slide. Now "the deck", "all slides" or
+  "every slide" in a request means every slide, unless it says "check slide N".
+
+**Not done yet:** tracked moves, edits inside fields or equations, the Python compare's headers, footers and footnotes,
+slide comments, an approximate slide preview when PowerPoint is busy, and the comment-adjudication table (see the
+design's Part X).
+
 ## Quantization: fewer bits per weight
 
 Every weight in a model is one number, and Llama 3.2 3B was trained with 16-bit ones (bf16): 3.2 billion of them,
@@ -1766,7 +1872,7 @@ lose less than a 3B at the same number of bits; here only the 3B could be measur
 
 ## Measuring instead of guessing: `evaluate.py`
 
-`python evaluate.py` runs thirty-four fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, five for the code tools, one of them a fix that the PLANNER hands to the code model, and four for a LaTeX paper: audit, fix, latexdiff, an edit; on 2026-10-16 the first thirty scored 30/30 in 17 minutes, with the date pinned, and on 2026-10-20 all thirty-four scored 34/34) and checks which tools actually ran (a pass means exactly
+`python evaluate.py` runs forty-four fixed requests (six media, nine documents and code, five about images, five for the fire-calculation, database, sub-agent and Excel tools, five for the code tools, one of them a fix that the PLANNER hands to the code model, four for a LaTeX paper: audit, fix, latexdiff, an edit, five for a Word document under review and five for editing a deck; on 2026-10-16 the first thirty scored 30/30 in 17 minutes, with the date pinned, and on 2026-10-20 all forty-four scored 43/44, then 44/44 after two CHECK ARGS fixes for the Office tools, described in [their section](#reviewing-a-word-document-and-editing-a-deck-with-its-author)) and checks which tools actually ran (a pass means exactly
 the expected tools ran, the results name the right files where a test says which, and the final
 answer is text). `python evaluate.py --real` adds slow tests on real files outside the project. `python evaluate.py --only database` runs only the tests whose request contains those words (here the two database tests, in about a minute). Because decoding is greedy, the same harness
 gives the same result every time, so any change in score comes from your change, with one catch found on 2026-10-16:

@@ -97,6 +97,29 @@ TESTS = [
     ("Make a latexdiff of workspace/latex_demo against the fixed copy.", ["make_latexdiff"], {"diff_pdf": ".pdf"}),
     ('In workspace/latex_demo, change "a fast fire" to "a fast t-squared fire" and give me a latexdiff.',
      ["edit_tex", "make_latexdiff"], {"changed": "design_fires.tex"}),
+    # a Word document under review (tools/word_review.py): two reviewers' tracked changes and comment threads.
+    # Plain Python writes every revision and proves it (reject gives back the original, accept the intended text)
+    ("Which comments in workspace/review_demo/test_plan.docx are still open, and who made the tracked changes?",
+     ["read_review"], {"census": "B. Checker"}),
+    ('In workspace/review_demo/test_plan.docx, with track changes, change "within 5 minutes" to "within 3 minutes" '
+     "and add a comment that the sprinkler data supports it.", ["redline_docx"], {"summary": "verified"}),
+    ("Reply to comment 4 in workspace/review_demo/test_plan.docx that the duct sizes are now in Table 1, and mark it "
+     "resolved.", ["comment_docx"], {"summary": "to c4); c4 resolved"}),
+    ("Make a clean copy of workspace/review_demo/test_plan.docx with B. Checker's changes accepted and the rest "
+     "rejected.", ["accept_changes"], {"summary": "B. Checker"}),
+    ("Compare workspace/review_demo/test_plan_v2.docx with test_plan.docx, with track changes.", ["compare_docx"],
+     {"revised": "v2"}),
+    # a deck edited with its author (tools/deck_edit.py): what they changed, and edits that touch no other slide
+    ("What did I change in workspace/deck_demo/briefing_edited.pptx compared with briefing.pptx?", ["diff_decks"],
+     {"moved": "Instrumentation"}),
+    ('In workspace/deck_demo/briefing.pptx, move slide 5 after slide 2, and add speaker notes to slide 3: "Start with '
+     'the exhaust hood, then the thermocouple trees."', ["edit_deck"], {"done": "notes on slide 3"}),
+    ('On slide 4 of workspace/deck_demo/briefing.pptx, change "12 tests" to "14 tests".', ["edit_deck"],
+     {"done": "14 tests"}),
+    ("Import slides 2-3 of workspace/deck_demo/results.pptx after slide 6 of briefing.pptx, in briefing's layouts.",
+     ["edit_deck"], {"done": "results.pptx"}),
+    ("Delete slide 7 of workspace/deck_demo/briefing.pptx and check the deck for overflow.",
+     ["edit_deck", "check_deck"], {"problems": "overflow"}),
 ]
 
 # APPROVAL (agent.py) asks a person before run_script runs code. Here nobody is asked, and every call is approved,

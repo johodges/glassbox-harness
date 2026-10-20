@@ -5,6 +5,7 @@ from .coding import (CheckCodeTool, CreateFileTool, ReviewCodeTool, RunTestsTool
                      SearchCodeTool, WriteCodeTool)
 from .combine import CombineTool
 from .database import QueryDatabaseTool
+from .deck_edit import CheckDeckTool, DiffDecksTool, EditDeckTool, ReadDeckTool
 from .digitize import DigitizePlotTool
 from .excel import UpdateExcelTool
 from .files import ReadFileTool, SearchReferencesTool
@@ -23,6 +24,8 @@ from .speech import SpeechTool
 from .subagent import AskSubagentTool
 from .video import VideoTool
 from .vision import LookAtImageTool
+from .word_review import (AcceptChangesTool, CommentDocxTool, CompareDocxTool, ReadReviewTool,
+                          RedlineDocxTool)
 
 
 def all_tools():
@@ -38,4 +41,8 @@ def all_tools():
     # LaTeX projects: build, map, audit, fix, edit, and a latexdiff for review (latex_project.py ... latexdiff.py)
     latex = (BuildLatexTool(), ScanLatexTool(), AuditLatexTool(), FixLatexTool(), EditTexTool(),
              MakeLatexdiffTool())
-    return {t.name: t for t in media + documents + seeing + more + code + latex}
+    # reviewing a Word document with track changes and comments, and editing a deck with its author
+    # (word_review.py, deck_edit.py; OFFICE_COLLAB_DESIGN.md)
+    review = (ReadReviewTool(), RedlineDocxTool(), CommentDocxTool(), CompareDocxTool(), AcceptChangesTool())
+    decks = (ReadDeckTool(), DiffDecksTool(), EditDeckTool(), CheckDeckTool())
+    return {t.name: t for t in media + documents + seeing + more + code + latex + review + decks}

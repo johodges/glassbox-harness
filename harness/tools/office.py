@@ -11,19 +11,32 @@ from .files import check_written_text, rel, resolve, working_copy
 
 
 def _replace_paragraphs(text_frame, lines):
-    """Put new lines into a text box, keeping the first paragraph's formatting (font, bullet style)."""
-    paragraphs = text_frame.paragraphs
-    for p in paragraphs[1:]:
-        p._p.getparent().remove(p._p)
-    first = paragraphs[0]
-    for r in first.runs[1:]:
-        r._r.getparent().remove(r._r)
-    if first.runs:
-        first.runs[0].text = lines[0]
-    else:
-        first.text = lines[0]
-    for line in lines[1:]:
-        text_frame.add_paragraph().text = line
+    """
+    Put new lines into a text box. Each new line is a copy of the old paragraph at its place (the last one for extra
+    lines): its level, bullet and first run's font size and colour stay. A plain new paragraph would fall back to the
+    template's own size, e.g. 32 pt in a deck the author had set at 24 pt.
+    """
+    import copy
+    from pptx.oxml.ns import qn
+    old = [p._p for p in text_frame.paragraphs]
+    parent = old[0].getparent()
+    for i, line in enumerate(lines):
+        p = copy.deepcopy(old[min(i, len(old) - 1)])
+        runs = p.findall(qn("a:r"))
+        for child in list(p):  # keep the paragraph's properties, its first run and its end mark
+            if child.tag not in (qn("a:pPr"), qn("a:endParaRPr")) and not (runs and child is runs[0]):
+                p.remove(child)
+        if runs:
+            runs[0].find(qn("a:t")).text = line
+        else:
+            run = p.makeelement(qn("a:r"), {})
+            run.append(p.makeelement(qn("a:t"), {}))
+            run[0].text = line
+            end = p.find(qn("a:endParaRPr"))
+            (end.addprevious if end is not None else p.append)(run)
+        old[-1].addnext(p) if i == 0 else parent.findall(qn("a:p"))[-1].addnext(p)
+    for p in old:
+        parent.remove(p)
 
 
 def closest_heading(name, options):
@@ -89,11 +102,15 @@ class UpdatePowerPointTool(Tool):
             if title and title_shape is not None:
                 _replace_paragraphs(title_shape.text_frame, [title])
             _replace_paragraphs(body.text_frame, bullets)
-            if notes:
-                target.notes_slide.notes_text_frame.text = notes
+            if notes:  # added to what the author wrote, never over it
+                frame = target.notes_slide.notes_text_frame
+                if frame.text.strip():
+                    frame.add_paragraph().text = notes
+                else:
+                    frame.text = notes
             prs.save(copy)
             ev.summary = (f"slide {slide} of {copy.name}: title \"{title or old_title}\", {len(bullets)} bullet(s)"
-                          + (", speaker notes" if notes else ""))
+                          + (", speaker notes added" if notes else ""))
             ev.artifacts.append(str(copy))
         note = f"slide {slide} updated in a copy; the original {rel(source)} is unchanged"
         return {"artifacts": [{"type": "slides", "path": copy, "slide": slide, "note": note}]}

@@ -27,7 +27,7 @@ def test_paper_requests(prompt, tools):
 def test_the_other_requests_are_untouched():
     from evaluate import TESTS
     others = [prompt for prompt, *_ in TESTS if "latex_demo" not in prompt]
-    assert len(others) == 30 and {prompt: latex_rules(prompt, TOOLS) for prompt in others
+    assert len(others) == 40 and {prompt: latex_rules(prompt, TOOLS) for prompt in others
                                   if latex_rules(prompt, TOOLS)} == {}
 
 

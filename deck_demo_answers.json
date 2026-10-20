@@ -1,0 +1,39 @@
+{
+  "about": "What is planted in workspace/deck_demo (made by workspace/make_deck_demo.py), for compare_decks.py and the unit tests. Kept outside workspace/ so no tool can show it to the LLM. A diff item matches a planted edit when it is of the same kind and names the same slide title; a check_deck problem matches a planted problem when it names the same slide and shape (and, for keep-out zones, the zone).",
+  "decks": {
+    "original": "workspace/deck_demo/briefing.pptx",
+    "edited": "workspace/deck_demo/briefing_edited.pptx",
+    "import_from": "workspace/deck_demo/results.pptx"
+  },
+  "planted_edits": [
+    {"id": 1, "kind": "moved", "slide": "Instrumentation", "what": "slide 3 moved after slide 5 (Observations)"},
+    {"id": 2, "kind": "deleted", "slide": "Peak values by test", "what": "slide 7 deleted"},
+    {"id": 3, "kind": "text", "slide": "Test programme", "anchor": "**only**",
+     "what": "bullet 3 reworded, with the word 'only' made bold"},
+    {"id": 4, "kind": "notes", "slide": "Observations", "anchor": "smoke layer",
+     "what": "speaker notes added to a slide that had none"},
+    {"id": 5, "kind": "picture", "slide": "Design fire curves", "what": "the plot swapped for its grey version"},
+    {"id": 6, "kind": "geometry", "slide": "Results so far", "anchor": "22.0",
+     "what": "the body text box narrowed from 30.5 cm to 22.0 cm"}
+  ],
+  "planted_problems": [
+    {"id": "P1", "kind": "overflow", "slide": 5, "title": "Observations", "shape": "Content Placeholder 2",
+     "what": "seven long bullets at 24 pt: PowerPoint measures about 125% of the box's height"},
+    {"id": "P2", "kind": "keep_out", "zone": "logo", "slide": 6, "title": "Design fire curves", "shape": "Picture 2",
+     "what": "the plot's bottom-right corner covers the logo (and crosses the footer rule)"}
+  ],
+  "stale_reference": {"after": {"op": "delete", "slide": 7}, "slide_title": "Instrumentation", "where": "notes",
+                      "words": "Slide 7", "what": "the notes of 'Instrumentation' point at slide 7, the deleted table"},
+  "evaluate": [
+    {"request": "What did I change in workspace/deck_demo/briefing_edited.pptx compared with briefing.pptx?",
+     "tools": ["diff_decks"], "facts": {"moved": "Instrumentation"}},
+    {"request": "In workspace/deck_demo/briefing.pptx, move slide 5 after slide 2, and add speaker notes to slide 3: \"Start with the exhaust hood, then the thermocouple trees.\"",
+     "tools": ["edit_deck"], "facts": {"done": "notes on slide 3"}},
+    {"request": "On slide 4 of workspace/deck_demo/briefing.pptx, change \"12 tests\" to \"14 tests\".",
+     "tools": ["edit_deck"], "facts": {"done": "14 tests"}},
+    {"request": "Import slides 2-3 of workspace/deck_demo/results.pptx after slide 6 of briefing.pptx, in briefing's layouts.",
+     "tools": ["edit_deck"], "facts": {"done": "results.pptx"}},
+    {"request": "Delete slide 7 of workspace/deck_demo/briefing.pptx and check the deck for overflow.",
+     "tools": ["edit_deck", "check_deck"], "facts": {"problems": "overflow"}}
+  ]
+}

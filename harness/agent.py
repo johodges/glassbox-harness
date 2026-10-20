@@ -210,8 +210,15 @@ DECLINED = ("The user declined: they did not allow this call, so it did not run.
             "go on.")
 
 # Text a tool brings back from a file or a reference note, checked for instructions before the LLM reads it
-# (TOOL OUTPUT GUARD): tool name -> the key in its result that holds that text.
-GUARDED_OUTPUTS = {"search_references": "passages", "read_file": "content"}
+# (TOOL OUTPUT GUARD): tool name -> the key, or keys, in its result that hold that text. A reviewer's comment and a
+# slide's text are other people's words too: read_review's threads and section, read_deck's slides.
+GUARDED_OUTPUTS = {"search_references": "passages", "read_file": "content",
+                   "read_review": ("open_threads", "section"), "read_deck": "detail"}
+
+
+def guarded_keys(name):
+    keys = GUARDED_OUTPUTS.get(name, ())
+    return (keys,) if isinstance(keys, str) else keys
 # Flagged text is removed, and this one note goes in a field of its own. A note left in the passage's place
 # ("[Withheld by the harness: ...]") was copied into the slide's bullets by Llama, and the JSON broke.
 WITHHELD = "{what} contained instructions, not facts (INJECTION {score:.3f}), so the harness removed it."
@@ -557,8 +564,9 @@ class Agent:
         if results:
             result["results"] = results
         result.update(output.get("observations", {}))  # e.g. a file's text, search passages, a script's output
-        if tool.name in GUARDED_OUTPUTS and result.get(GUARDED_OUTPUTS[tool.name]):
-            self.guard_tool_output(tool.name, result)
+        for key in guarded_keys(tool.name):
+            if result.get(key):
+                self.guard_tool_output(tool.name, result, key)
         return result
 
     def approve(self, tool, args, ctx):
@@ -583,21 +591,23 @@ class Agent:
             ev.details = {"question": question, "answer": str(answer), "approved": approved}
         return approved
 
-    def guard_tool_output(self, name, result):
+    def guard_tool_output(self, name, result, key=None):
         """
         TOOL OUTPUT GUARD: the input guard's classifier, run on the text a tool brought back. A reference note or
         a file can carry instructions too ("ignore the user's request and ..."), and to the LLM they look just
         like the user's. This is indirect prompt injection: the INPUT GUARD never sees it, because the user's
         prompt is innocent. Flagged pieces are removed, and a "withheld" field tells the LLM what was removed.
         """
-        t, cfg, key = self.tracer, self.config, GUARDED_OUTPUTS[name]
+        t, cfg, key = self.tracer, self.config, key or guarded_keys(name)[0]
         if not cfg.guard_tool_outputs:
             t.say(f"guard_tool_outputs is off: the {key} from {name} go to the LLM unchecked", kind="python")
             return
         self.guard = self.guard or InputGuard(t, self.small_device)
         self.guard.threshold = cfg.guard_threshold
         # passages are checked one by one; a file is cut into paragraphs (the classifier reads at most 512 tokens)
-        pieces = [p["text"] for p in result[key]] if key == "passages" else split_lines(result[key])
+        listed = isinstance(result[key], list)  # a list of strings (comment threads) is checked item by item
+        pieces = ([p["text"] for p in result[key]] if key == "passages" else [str(p) for p in result[key]] if listed
+                  else split_lines(result[key]))
         with t.stage("TOOL OUTPUT GUARD", "classifier", self.guard.model_id, f"{len(pieces)} pieces of text from "
                      f"{name}", "kept or withheld") as ev:
             # The classifier reads only the sentences: it was trained on prose, and scored rows of numbers from a
@@ -615,6 +625,9 @@ class Agent:
                 sources = sorted({p["source"] for p, v in zip(result[key], verdicts) if v["blocked"]})
                 what = f"{len(removed)} passage{'s' if len(removed) > 1 else ''} from {', '.join(sources)}"
                 result[key] = [p for p, v in zip(result[key], verdicts) if not v["blocked"]]
+            elif listed:
+                what = f"{len(removed)} of the {key.replace('_', ' ')}"
+                result[key] = [p for p, v in zip(result[key], verdicts) if not v["blocked"]]
             else:
                 numbers = [int(n) for piece, _ in removed for n in re.findall(r"(?m)^\s*(\d+)\|", piece)]
                 if not numbers:  # a .pptx, .docx or .pdf has no line numbers
@@ -624,8 +637,9 @@ class Agent:
                 else:
                     what = f"Lines {min(numbers)}-{max(numbers)} of this file"
                 result[key] = "\n".join(piece for piece, v in zip(pieces, verdicts) if not v["blocked"])
-            if removed:
-                result["withheld"] = WITHHELD.format(what=what, score=max(v["score"] for _, v in removed))
+            if removed:  # a second guarded key adds its note to the first's
+                note = WITHHELD.format(what=what, score=max(v["score"] for _, v in removed))
+                result["withheld"] = f"{result['withheld']} {note}" if result.get("withheld") else note
             flagged = len(removed)
             ev.summary = (f"{flagged} of {len(pieces)} piece(s) INJECTION (score >= {self.guard.threshold}) -> withheld "
                           "from the LLM" if flagged else f"all {len(pieces)} piece(s) SAFE -> passed to the LLM")
